@@ -8,7 +8,12 @@ async def main():
     print("Loading...")
     server = VoxCPM.from_pretrained(
         model="~/VoxCPM-0.5B",
-        devices=[2],
+        max_num_batched_tokens=8192,
+        max_num_seqs=16,
+        max_model_len=4096,
+        gpu_memory_utilization=0.95,
+        enforce_eager=False,
+        devices=[0],
     )
     await server.wait_for_ready()
     print("Ready")

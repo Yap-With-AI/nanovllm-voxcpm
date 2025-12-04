@@ -55,7 +55,7 @@ class VoxCPMEngine(LLMEngineBase):
                 VoxCPMPayload(
                     text_tokens=np.array(seq.custom_payload.text_tokens[seq.num_cached_tokens:], dtype=np.int64),
                     feats=seq.custom_payload.feats[-1][seq.num_cached_tokens:],
-                    feat_masks=np.array(seq.custom_payload.feat_masks[seq.num_cached_tokens:], dtype=np.bool),
+                    feat_masks=np.array(seq.custom_payload.feat_masks[seq.num_cached_tokens:], dtype=np.bool_),
                     temperature=seq.custom_payload.temperature,
                     cfg_value=seq.custom_payload.cfg_value,
                     padding_decode=seq.custom_payload.decode_pad,
@@ -70,7 +70,7 @@ class VoxCPMEngine(LLMEngineBase):
                 VoxCPMPayload(
                     text_tokens=np.array(seq.custom_payload.text_tokens[-1:], dtype=np.int64),
                     feats=seq.custom_payload.feats[-1][-1:],
-                    feat_masks=np.array(seq.custom_payload.feat_masks[-1:], dtype=np.bool),
+                    feat_masks=np.array(seq.custom_payload.feat_masks[-1:], dtype=np.bool_),
                     temperature=seq.custom_payload.temperature,
                     cfg_value=seq.custom_payload.cfg_value,
                     padding_decode=seq.custom_payload.decode_pad,

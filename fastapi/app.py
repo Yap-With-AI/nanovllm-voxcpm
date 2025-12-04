@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
-from nanovllm_voxcpm.models.voxcpm.server import AsyncVoxCPMServer
+from nanovllm_voxcpm.models.voxcpm.server import AsyncVoxCPMServerPool
 import base64
 from pydantic import BaseModel
 
@@ -12,7 +12,14 @@ global_instances = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global_instances["server"] = AsyncVoxCPMServer(model="~/VoxCPM-0.5B")
+    global_instances["server"] = AsyncVoxCPMServerPool(model_path=MODEL_PATH,
+                                                       max_num_batched_tokens=8192,
+                                                       max_num_seqs=16,
+                                                       max_model_len=4096,
+                                                       gpu_memory_utilization=0.95,
+                                                       enforce_eager=False,
+                                                       devices=[0],
+                                                       )
     await global_instances["server"].wait_for_ready()
     yield
     await global_instances["server"].stop()
@@ -33,7 +40,7 @@ class AddPromptRequest(BaseModel):
 @app.post("/add_prompt")
 async def add_prompt(request: AddPromptRequest):
     wav = base64.b64decode(request.wav_base64)
-    server : AsyncVoxCPMServer = global_instances["server"]
+    server : AsyncVoxCPMServerPool = global_instances["server"]
 
     prompt_id = await server.add_prompt(wav, request.wav_format, request.prompt_text)
     return {"prompt_id": prompt_id}
@@ -43,7 +50,7 @@ class RemovePromptRequest(BaseModel):
 
 @app.post("/remove_prompt")
 async def remove_prompt(request: RemovePromptRequest):
-    server : AsyncVoxCPMServer = global_instances["server"]
+    server : AsyncVoxCPMServerPool = global_instances["server"]
     await server.remove_prompt(request.prompt_id)
     return {"status": "ok"}
 
@@ -62,11 +69,18 @@ async def numpy_to_bytes(gen) :
 
 @app.post("/generate")
 async def generate(request: GenerateRequest):
-    server : AsyncVoxCPMServer = global_instances["server"]
-    return StreamingResponse(numpy_to_bytes(server.generate(
-        request.target_text, 
-        request.prompt_id, 
-        request.max_generate_length, 
-        request.temperature, 
-        request.cfg_value
-    )), media_type="audio/raw")
+    server : AsyncVoxCPMServerPool = global_instances["server"]
+    return StreamingResponse(
+        numpy_to_bytes(
+            server.generate(
+                target_text=request.target_text,
+                prompt_latents=None,
+                prompt_text="",
+                prompt_id=request.prompt_id,
+                max_generate_length=request.max_generate_length,
+                temperature=request.temperature,
+                cfg_value=request.cfg_value,
+            )
+        ),
+        media_type="audio/raw",
+    )

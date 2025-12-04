@@ -42,7 +42,7 @@ class VoxCPMRunner(BaseModelRunner):
         load_model(self.model, model_path)
 
         torch.set_default_dtype(torch.float32)
-        self.vae = AudioVAE()
+        self.vae = AudioVAE() if model_config.audio_vae_config is None else AudioVAE(**model_config.audio_vae_config.model_dump(mode="dict"))
 
         vae_state_dict = torch.load(os.path.join(model_path, "audiovae.pth"))["state_dict"]
         self.vae.load_state_dict(vae_state_dict)
