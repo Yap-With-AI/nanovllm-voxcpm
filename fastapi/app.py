@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
         max_num_batched_tokens=4096,   # Optimized for short inputs (~60 tokens)
         max_num_seqs=64,               # Maximized concurrent streams
         max_model_len=512,             # 60 input + 375 audio (15s) + buffer
-        gpu_memory_utilization=0.92,
+        gpu_memory_utilization=0.90,   # Reserve 90% GPU memory
         enforce_eager=False,
         devices=[0],
     )

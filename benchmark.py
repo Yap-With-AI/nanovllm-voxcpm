@@ -1,5 +1,5 @@
 """
-TTS Benchmark Script
+TTS Benchmark Script - Calls FastAPI server
 Measures: TTFB, RTF, XRT, P50/P90/P95 latencies, throughput
 """
 
@@ -9,7 +9,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List
 import argparse
-from nanovllm_voxcpm import VoxCPM
+import httpx
 
 
 @dataclass
@@ -17,7 +17,6 @@ class RequestMetrics:
     """Metrics for a single request"""
     request_id: int
     text: str
-    text_tokens: int  # approximate
     
     # Timing
     start_time: float = 0.0
@@ -117,7 +116,7 @@ class BenchmarkResults:
             
             # Throughput
             "total_audio_sec": total_audio,
-            "throughput_xrt": total_audio / wall_time if wall_time > 0 else 0,  # aggregate XRT
+            "throughput_xrt": total_audio / wall_time if wall_time > 0 else 0,
             "requests_per_sec": len(self.metrics) / wall_time if wall_time > 0 else 0,
         }
     
@@ -166,7 +165,6 @@ class BenchmarkResults:
         
         print("\n" + "="*60)
         
-        # Real-time capability assessment
         if s['rtf_p95'] < 1.0:
             print("✅ REAL-TIME CAPABLE: P95 RTF < 1.0")
         else:
@@ -193,7 +191,8 @@ SAMPLE_TEXTS = [
 
 
 async def run_single_request(
-    server: VoxCPM,
+    client: httpx.AsyncClient,
+    server_url: str,
     request_id: int,
     text: str,
     max_generate_length: int,
@@ -202,30 +201,34 @@ async def run_single_request(
 ) -> RequestMetrics:
     """Run a single TTS request and collect metrics"""
     
-    # Approximate token count (rough estimate)
-    approx_tokens = len(text.split()) + 10
-    
     metrics = RequestMetrics(
         request_id=request_id,
         text=text,
-        text_tokens=approx_tokens,
     )
     
     metrics.start_time = time.perf_counter()
     first_chunk_received = False
     
-    async for chunk in server.generate(
-        target_text=text,
-        temperature=temperature,
-        cfg_value=cfg_value,
-        max_generate_length=max_generate_length,
-    ):
-        if not first_chunk_received:
-            metrics.first_chunk_time = time.perf_counter()
-            first_chunk_received = True
+    async with client.stream(
+        "POST",
+        f"{server_url}/generate",
+        json={
+            "target_text": text,
+            "temperature": temperature,
+            "cfg_value": cfg_value,
+            "max_generate_length": max_generate_length,
+        },
+    ) as response:
+        response.raise_for_status()
         
-        metrics.audio_samples += len(chunk)
-        metrics.chunk_count += 1
+        async for chunk in response.aiter_bytes():
+            if not first_chunk_received:
+                metrics.first_chunk_time = time.perf_counter()
+                first_chunk_received = True
+            
+            # Each chunk is raw float32 audio
+            metrics.audio_samples += len(chunk) // 4
+            metrics.chunk_count += 1
     
     metrics.end_time = time.perf_counter()
     
@@ -233,7 +236,7 @@ async def run_single_request(
 
 
 async def run_batch(
-    server: VoxCPM,
+    server_url: str,
     texts: List[str],
     max_generate_length: int,
     temperature: float,
@@ -242,16 +245,20 @@ async def run_batch(
 ) -> List[RequestMetrics]:
     """Run a batch of concurrent requests"""
     
-    tasks = [
-        run_single_request(server, start_id + i, text, max_generate_length, temperature, cfg_value)
-        for i, text in enumerate(texts)
-    ]
-    
-    return await asyncio.gather(*tasks)
+    async with httpx.AsyncClient(timeout=300) as client:
+        tasks = [
+            run_single_request(
+                client, server_url, start_id + i, text, 
+                max_generate_length, temperature, cfg_value
+            )
+            for i, text in enumerate(texts)
+        ]
+        
+        return await asyncio.gather(*tasks)
 
 
 async def run_benchmark(
-    server: VoxCPM,
+    server_url: str,
     num_requests: int,
     concurrency: int,
     max_generate_length: int,
@@ -278,7 +285,7 @@ async def run_benchmark(
         print(f"Running batch: {request_id + 1}-{request_id + batch_size} of {num_requests}...")
         
         batch_metrics = await run_batch(
-            server, batch_texts, max_generate_length, temperature, cfg_value, request_id
+            server_url, batch_texts, max_generate_length, temperature, cfg_value, request_id
         )
         
         for m in batch_metrics:
@@ -298,24 +305,26 @@ async def run_benchmark(
 
 
 async def main_async(args):
-    print("Loading model...")
-    server = VoxCPM.from_pretrained(
-        args.model,
-        max_num_batched_tokens=4096,
-        max_num_seqs=args.concurrency,
-        max_model_len=512,
-        gpu_memory_utilization=args.gpu_memory,
-        enforce_eager=False,
-        devices=[args.device],
-    )
-    await server.wait_for_ready()
-    print("Model ready!\n")
+    print(f"Connecting to server at {args.server}...")
+    
+    # Check server health
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"{args.server}/health", timeout=5)
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"ERROR: Cannot connect to server at {args.server}")
+            print(f"Make sure the FastAPI server is running:")
+            print(f"  cd fastapi && uvicorn app:app --host 0.0.0.0 --port 8000")
+            raise SystemExit(1)
+    
+    print("Server ready!\n")
     
     # Warmup
     if args.warmup > 0:
         print(f"Warming up with {args.warmup} requests...")
         await run_benchmark(
-            server,
+            args.server,
             num_requests=args.warmup,
             concurrency=min(args.warmup, args.concurrency),
             max_generate_length=args.max_generate_length,
@@ -327,7 +336,7 @@ async def main_async(args):
     # Run benchmark
     print(f"Starting benchmark: {args.num_requests} requests, concurrency={args.concurrency}")
     results = await run_benchmark(
-        server,
+        args.server,
         num_requests=args.num_requests,
         concurrency=args.concurrency,
         max_generate_length=args.max_generate_length,
@@ -336,14 +345,12 @@ async def main_async(args):
     )
     
     results.print_report()
-    
-    await server.stop()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="TTS Benchmark")
-    parser.add_argument("--model", type=str, default="openbmb/VoxCPM1.5",
-                        help="Model path or HuggingFace repo ID")
+    parser = argparse.ArgumentParser(description="TTS Benchmark - calls FastAPI server")
+    parser.add_argument("--server", type=str, default="http://localhost:8000",
+                        help="FastAPI server URL")
     parser.add_argument("--num-requests", type=int, default=32,
                         help="Total number of requests to run")
     parser.add_argument("--concurrency", type=int, default=16,
@@ -356,10 +363,6 @@ def main():
                         help="CFG value for classifier-free guidance")
     parser.add_argument("--warmup", type=int, default=4,
                         help="Number of warmup requests")
-    parser.add_argument("--gpu-memory", type=float, default=0.92,
-                        help="GPU memory utilization")
-    parser.add_argument("--device", type=int, default=0,
-                        help="GPU device ID")
     
     args = parser.parse_args()
     
@@ -368,4 +371,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

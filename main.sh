@@ -17,9 +17,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ============================================
+# Step 0: Cleanup - kill existing processes
+# ============================================
+echo -e "\n${YELLOW}[0/8] Cleaning up existing processes...${NC}"
+
+# Kill any existing uvicorn/python processes related to this project
+pkill -f "uvicorn app:app" 2>/dev/null || true
+pkill -f "nanovllm_voxcpm" 2>/dev/null || true
+sleep 2
+
+# Clear GPU memory
+python3 -c "
+import torch
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    print('GPU memory cache cleared')
+" 2>/dev/null || true
+
+echo -e "${GREEN}✓ Cleanup done${NC}"
+
+# ============================================
 # Step 1: Check for NVIDIA GPU
 # ============================================
-echo -e "\n${YELLOW}[1/7] Checking GPU...${NC}"
+echo -e "\n${YELLOW}[1/8] Checking GPU...${NC}"
 if ! command -v nvidia-smi &> /dev/null; then
     echo -e "${RED}ERROR: nvidia-smi not found. NVIDIA GPU required.${NC}"
     exit 1
@@ -31,7 +51,7 @@ echo -e "${GREEN}✓ GPU detected${NC}"
 # ============================================
 # Step 2: Create virtual environment
 # ============================================
-echo -e "\n${YELLOW}[2/7] Setting up virtual environment...${NC}"
+echo -e "\n${YELLOW}[2/8] Setting up virtual environment...${NC}"
 if [ ! -d "venv" ]; then
     python3 -m venv venv
     echo -e "${GREEN}✓ Created venv${NC}"
@@ -45,7 +65,7 @@ echo -e "${GREEN}✓ Activated venv${NC}"
 # ============================================
 # Step 3: Install dependencies
 # ============================================
-echo -e "\n${YELLOW}[3/7] Installing dependencies...${NC}"
+echo -e "\n${YELLOW}[3/8] Installing dependencies...${NC}"
 
 # Upgrade pip
 pip install --upgrade pip -q
@@ -78,7 +98,7 @@ echo -e "${GREEN}✓ All dependencies installed${NC}"
 # ============================================
 # Step 4: Verify PyTorch CUDA
 # ============================================
-echo -e "\n${YELLOW}[4/7] Verifying CUDA...${NC}"
+echo -e "\n${YELLOW}[4/8] Verifying CUDA...${NC}"
 python3 -c "
 import torch
 print(f'PyTorch version: {torch.__version__}')

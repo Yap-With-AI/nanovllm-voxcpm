@@ -1,29 +1,29 @@
 """
-Streaming TTS Example
-Demonstrates real-time audio streaming with VoxCPM
+Streaming TTS Example - Calls the FastAPI server
 """
 
-from nanovllm_voxcpm import VoxCPM
 import numpy as np
 import soundfile as sf
 import time
 import argparse
+import httpx
 
 
-async def main(args):
-    print("Loading model...")
-    server = VoxCPM.from_pretrained(
-        model=args.model,
-        max_num_batched_tokens=4096,
-        max_num_seqs=64,
-        max_model_len=512,
-        gpu_memory_utilization=0.92,
-        enforce_eager=False,
-        devices=[args.device],
-    )
-    await server.wait_for_ready()
-    print("Model ready!\n")
-
+def main(args):
+    print(f"Connecting to server at {args.server}...")
+    
+    # Check server health
+    try:
+        with httpx.Client() as client:
+            resp = client.get(f"{args.server}/health", timeout=5)
+            resp.raise_for_status()
+    except Exception as e:
+        print(f"ERROR: Cannot connect to server at {args.server}")
+        print(f"Make sure the FastAPI server is running:")
+        print(f"  cd fastapi && uvicorn app:app --host 0.0.0.0 --port 8000")
+        raise SystemExit(1)
+    
+    print(f"Server ready!\n")
     print(f"Generating audio for: \"{args.text[:80]}{'...' if len(args.text) > 80 else ''}\"")
     print(f"Temperature: {args.temperature}, CFG: {args.cfg_value}")
     print("-" * 60)
@@ -32,30 +32,62 @@ async def main(args):
     chunk_count = 0
     start_time = time.perf_counter()
     first_chunk_time = None
+    
+    # Stream audio from server
+    with httpx.Client(timeout=300) as client:
+        with client.stream(
+            "POST",
+            f"{args.server}/generate",
+            json={
+                "target_text": args.text,
+                "temperature": args.temperature,
+                "cfg_value": args.cfg_value,
+                "max_generate_length": args.max_generate_length,
+            },
+        ) as response:
+            response.raise_for_status()
+            
+            # Each chunk is raw float32 audio samples
+            buffer = b""
+            chunk_size = 4 * 5120  # 5120 float32 samples = 320ms of audio
+            
+            for data in response.iter_bytes():
+                buffer += data
+                
+                while len(buffer) >= chunk_size:
+                    chunk_bytes = buffer[:chunk_size]
+                    buffer = buffer[chunk_size:]
+                    
+                    chunk = np.frombuffer(chunk_bytes, dtype=np.float32)
+                    
+                    if first_chunk_time is None:
+                        first_chunk_time = time.perf_counter()
+                        ttfb = (first_chunk_time - start_time) * 1000
+                        print(f"  TTFB: {ttfb:.0f}ms")
 
-    async for chunk in server.generate(
-        target_text=args.text,
-        temperature=args.temperature,
-        cfg_value=args.cfg_value,
-        max_generate_length=args.max_generate_length,
-    ):
-        if first_chunk_time is None:
-            first_chunk_time = time.perf_counter()
-            ttfb = (first_chunk_time - start_time) * 1000
-            print(f"  TTFB: {ttfb:.0f}ms")
+                    chunks.append(chunk)
+                    chunk_count += 1
 
-        chunks.append(chunk)
-        chunk_count += 1
-
-        # Print streaming progress
-        audio_so_far = sum(len(c) for c in chunks) / 16000
-        elapsed = time.perf_counter() - start_time
-        current_rtf = elapsed / audio_so_far if audio_so_far > 0 else 0
-        print(f"  Chunk {chunk_count}: +{len(chunk)/16000:.2f}s audio, "
-              f"total={audio_so_far:.2f}s, RTF={current_rtf:.3f}x", end="\r")
+                    # Print streaming progress
+                    audio_so_far = sum(len(c) for c in chunks) / 16000
+                    elapsed = time.perf_counter() - start_time
+                    current_rtf = elapsed / audio_so_far if audio_so_far > 0 else 0
+                    print(f"  Chunk {chunk_count}: +{len(chunk)/16000:.2f}s audio, "
+                          f"total={audio_so_far:.2f}s, RTF={current_rtf:.3f}x", end="\r")
+            
+            # Handle remaining bytes
+            if len(buffer) > 0 and len(buffer) % 4 == 0:
+                chunk = np.frombuffer(buffer, dtype=np.float32)
+                if len(chunk) > 0:
+                    chunks.append(chunk)
+                    chunk_count += 1
 
     end_time = time.perf_counter()
     print()  # newline after progress
+
+    if not chunks:
+        print("ERROR: No audio received from server")
+        raise SystemExit(1)
 
     # Combine all chunks
     wav = np.concatenate(chunks, axis=0)
@@ -63,8 +95,8 @@ async def main(args):
     # Stats
     total_time = end_time - start_time
     audio_duration = len(wav) / 16000
-    rtf = total_time / audio_duration
-    xrt = audio_duration / total_time
+    rtf = total_time / audio_duration if audio_duration > 0 else 0
+    xrt = audio_duration / total_time if total_time > 0 else 0
 
     print("-" * 60)
     print(f"Total time:     {total_time:.2f}s")
@@ -77,13 +109,11 @@ async def main(args):
     sf.write(args.output, wav, 16000)
     print(f"\nSaved to: {args.output}")
 
-    await server.stop()
-
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Streaming TTS Example")
-    parser.add_argument("--model", type=str, default="openbmb/VoxCPM1.5",
-                        help="Model path or HuggingFace repo ID")
+    parser = argparse.ArgumentParser(description="Streaming TTS Example - calls FastAPI server")
+    parser.add_argument("--server", type=str, default="http://localhost:8000",
+                        help="FastAPI server URL")
     parser.add_argument("--text", type=str,
                         default="Hello, this is a demonstration of real-time text to speech synthesis. "
                                 "The audio is being generated and streamed chunk by chunk as it's produced.",
@@ -96,10 +126,6 @@ if __name__ == "__main__":
                         help="Max audio tokens (~15s at 400)")
     parser.add_argument("--output", type=str, default="output.wav",
                         help="Output WAV file path")
-    parser.add_argument("--device", type=int, default=0,
-                        help="GPU device ID")
 
     args = parser.parse_args()
-
-    import asyncio
-    asyncio.run(main(args))
+    main(args)
