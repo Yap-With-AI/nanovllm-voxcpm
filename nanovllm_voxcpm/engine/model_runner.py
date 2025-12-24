@@ -253,7 +253,7 @@ class BaseModelRunner:
         block_tables = torch.zeros(max_bs, max_num_blocks, dtype=torch.int32)
         outputs = self.make_dummy_outputs(max_bs)
 
-        self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
+        self.graph_bs = sorted(set([1, 2, 4, 8, max_bs] + list(range(16, max_bs + 1, 16))))
         self.graphs = {}
         self.graph_pool = None
 
