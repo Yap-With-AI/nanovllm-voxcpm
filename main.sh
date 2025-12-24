@@ -56,9 +56,10 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 # Check if flash-attn is installed
 if ! python -c "import flash_attn" 2>/dev/null; then
-    echo "Installing Flash Attention (this may take a few minutes)..."
-    pip install ninja -q
-    pip install flash-attn --no-build-isolation -q
+    echo "Installing Flash Attention build dependencies..."
+    pip install ninja psutil packaging -q
+    echo "Installing Flash Attention (this may take several minutes - compiling CUDA kernels)..."
+    pip install flash-attn --no-build-isolation
 fi
 echo -e "${GREEN}✓ Flash Attention installed${NC}"
 
