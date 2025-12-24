@@ -77,4 +77,4 @@ class VoxCPMConfig(BaseModel):
     device: str = "cuda"
     dtype: str = "bfloat16"
 
-    inference_timesteps: int = 10
+    inference_timesteps: int = 12
