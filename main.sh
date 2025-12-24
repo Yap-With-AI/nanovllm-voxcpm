@@ -191,33 +191,31 @@ python3 example.py \
 echo -e "\n${GREEN}✓ Run 2 complete - saved to output_run2.wav${NC}"
 
 # ============================================
-# Step 8: Print summary and cleanup
+# Step 8: Summary (server keeps running)
 # ============================================
-echo -e "\n${YELLOW}[8/8] Cleanup and Summary${NC}"
-
-# Stop the server
-kill $SERVER_PID 2>/dev/null || true
-echo -e "${GREEN}✓ FastAPI server stopped${NC}"
+echo -e "\n${YELLOW}[8/8] Summary${NC}"
 
 echo -e "\n${BLUE}========================================${NC}"
 echo -e "${BLUE}              SUMMARY${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
+echo -e "${GREEN}✓ FastAPI server is running on http://0.0.0.0:8000${NC}"
+echo "  Server PID: $SERVER_PID"
+echo ""
 echo "Output files:"
 echo "  - output_run1.wav (warmup run)"
 echo "  - output_run2.wav (performance run)"
 echo ""
-echo "To run again:"
+echo "Run example:"
 echo "  source venv/bin/activate"
 echo "  python example.py --text \"Your text here\""
 echo ""
-echo "To run benchmark:"
+echo "Run benchmark:"
 echo "  source venv/bin/activate"
 echo "  python benchmark.py --concurrency 16 --num-requests 32"
 echo ""
-echo "To start FastAPI server:"
-echo "  source venv/bin/activate"
-echo "  cd fastapi && uvicorn app:app --host 0.0.0.0 --port 8000"
+echo "Stop server:"
+echo "  kill $SERVER_PID"
 echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}            SETUP COMPLETE!${NC}"
