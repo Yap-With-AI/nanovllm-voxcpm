@@ -1,42 +1,105 @@
+"""
+Streaming TTS Example
+Demonstrates real-time audio streaming with VoxCPM
+"""
+
 from nanovllm_voxcpm import VoxCPM
 import numpy as np
 import soundfile as sf
-from tqdm.asyncio import tqdm
 import time
+import argparse
 
-async def main():
-    print("Loading...")
+
+async def main(args):
+    print("Loading model...")
     server = VoxCPM.from_pretrained(
-        model="~/VoxCPM-0.5B",
-        max_num_batched_tokens=8192,
-        max_num_seqs=16,
-        max_model_len=4096,
-        gpu_memory_utilization=0.95,
+        model=args.model,
+        max_num_batched_tokens=4096,
+        max_num_seqs=64,
+        max_model_len=512,
+        gpu_memory_utilization=0.92,
         enforce_eager=False,
-        devices=[0],
+        devices=[args.device],
     )
     await server.wait_for_ready()
-    print("Ready")
+    print("Model ready!\n")
 
-    buf = []
-    start_time = time.time()
-    async for data in tqdm(server.generate(
-            target_text="有这么一个人呐，一个字都不认识，连他自己的名字都不会写，他上京赶考去了。哎，到那儿还就中了，不但中了，而且升来升去呀，还入阁拜相，你说这不是瞎说吗？哪有这个事啊。当然现在是没有这个事，现在你不能替人民办事，人民也不选举你呀！我说这个事情啊，是明朝的这么一段事情。因为在那个社会啊，甭管你有才学没才学，有学问没学问，你有钱没有？有钱，就能做官，捐个官做。说有势力，也能做官。也没钱也没势力，碰上啦，用上这假势力，也能做官，什么叫“假势力”呀，它因为在那个社会呀，那些个做官的人，都怀着一肚子鬼胎，都是这个拍上欺下，疑神疑鬼，你害怕我，我害怕你，互相害怕，这里头就有矛盾啦。由打这个呢，造成很多可笑的事情。今天我说的这段就这么回事。",
-            cfg_value=1.5
-        )):
-        buf.append(data)
-    wav = np.concatenate(buf, axis=0)
-    end_time = time.time()
+    print(f"Generating audio for: \"{args.text[:80]}{'...' if len(args.text) > 80 else ''}\"")
+    print(f"Temperature: {args.temperature}, CFG: {args.cfg_value}")
+    print("-" * 60)
 
-    time_used = end_time - start_time
-    wav_duration = wav.shape[0] / 16000
-    sf.write("test.wav", wav, 16000)
+    chunks = []
+    chunk_count = 0
+    start_time = time.perf_counter()
+    first_chunk_time = None
 
-    print(f"Time: {end_time - start_time}s")
-    print(f"RTF: {time_used / wav_duration}")
+    async for chunk in server.generate(
+        target_text=args.text,
+        temperature=args.temperature,
+        cfg_value=args.cfg_value,
+        max_generate_length=args.max_generate_length,
+    ):
+        if first_chunk_time is None:
+            first_chunk_time = time.perf_counter()
+            ttfb = (first_chunk_time - start_time) * 1000
+            print(f"  TTFB: {ttfb:.0f}ms")
+
+        chunks.append(chunk)
+        chunk_count += 1
+
+        # Print streaming progress
+        audio_so_far = sum(len(c) for c in chunks) / 16000
+        elapsed = time.perf_counter() - start_time
+        current_rtf = elapsed / audio_so_far if audio_so_far > 0 else 0
+        print(f"  Chunk {chunk_count}: +{len(chunk)/16000:.2f}s audio, "
+              f"total={audio_so_far:.2f}s, RTF={current_rtf:.3f}x", end="\r")
+
+    end_time = time.perf_counter()
+    print()  # newline after progress
+
+    # Combine all chunks
+    wav = np.concatenate(chunks, axis=0)
+    
+    # Stats
+    total_time = end_time - start_time
+    audio_duration = len(wav) / 16000
+    rtf = total_time / audio_duration
+    xrt = audio_duration / total_time
+
+    print("-" * 60)
+    print(f"Total time:     {total_time:.2f}s")
+    print(f"Audio duration: {audio_duration:.2f}s")
+    print(f"Chunks:         {chunk_count}")
+    print(f"RTF:            {rtf:.3f}x {'(real-time capable)' if rtf < 1 else ''}")
+    print(f"XRT:            {xrt:.2f}x real-time")
+
+    # Save output
+    sf.write(args.output, wav, 16000)
+    print(f"\nSaved to: {args.output}")
 
     await server.stop()
 
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Streaming TTS Example")
+    parser.add_argument("--model", type=str, default="openbmb/VoxCPM1.5",
+                        help="Model path or HuggingFace repo ID")
+    parser.add_argument("--text", type=str,
+                        default="Hello, this is a demonstration of real-time text to speech synthesis. "
+                                "The audio is being generated and streamed chunk by chunk as it's produced.",
+                        help="Text to synthesize")
+    parser.add_argument("--temperature", type=float, default=1.0,
+                        help="Sampling temperature")
+    parser.add_argument("--cfg-value", type=float, default=1.5,
+                        help="CFG value for classifier-free guidance")
+    parser.add_argument("--max-generate-length", type=int, default=400,
+                        help="Max audio tokens (~15s at 400)")
+    parser.add_argument("--output", type=str, default="output.wav",
+                        help="Output WAV file path")
+    parser.add_argument("--device", type=int, default=0,
+                        help="GPU device ID")
+
+    args = parser.parse_args()
+
     import asyncio
-    asyncio.run(main())
+    asyncio.run(main(args))

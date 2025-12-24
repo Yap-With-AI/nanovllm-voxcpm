@@ -7,19 +7,20 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-MODEL_PATH = "~/VoxCPM-0.5B"
+MODEL_PATH = "openbmb/VoxCPM1.5"
 global_instances = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global_instances["server"] = AsyncVoxCPMServerPool(model_path=MODEL_PATH,
-                                                       max_num_batched_tokens=8192,
-                                                       max_num_seqs=16,
-                                                       max_model_len=4096,
-                                                       gpu_memory_utilization=0.95,
-                                                       enforce_eager=False,
-                                                       devices=[0],
-                                                       )
+    global_instances["server"] = AsyncVoxCPMServerPool(
+        model_path=MODEL_PATH,
+        max_num_batched_tokens=4096,   # Optimized for short inputs (~60 tokens)
+        max_num_seqs=64,               # Maximized concurrent streams
+        max_model_len=512,             # 60 input + 375 audio (15s) + buffer
+        gpu_memory_utilization=0.92,
+        enforce_eager=False,
+        devices=[0],
+    )
     await global_instances["server"].wait_for_ready()
     yield
     await global_instances["server"].stop()
@@ -58,7 +59,7 @@ async def remove_prompt(request: RemovePromptRequest):
 class GenerateRequest(BaseModel):
     target_text : str
     prompt_id : str | None = None
-    max_generate_length : int = 2000
+    max_generate_length : int = 400  # ~15 seconds max
     temperature : float = 1.0
     cfg_value : float = 1.5
 
