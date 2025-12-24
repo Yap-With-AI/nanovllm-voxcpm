@@ -30,11 +30,13 @@ def main(args):
 
     chunks = []
     chunk_count = 0
-    start_time = time.perf_counter()
     first_chunk_time = None
     
-    # Stream audio from server
+    # Stream audio from server (fresh connection, no reuse)
     with httpx.Client(timeout=300) as client:
+        # Start timing RIGHT BEFORE sending the request (not including handshake)
+        start_time = time.perf_counter()
+        
         with client.stream(
             "POST",
             f"{args.server}/generate",

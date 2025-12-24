@@ -191,7 +191,6 @@ SAMPLE_TEXTS = [
 
 
 async def run_single_request(
-    client: httpx.AsyncClient,
     server_url: str,
     request_id: int,
     text: str,
@@ -206,29 +205,33 @@ async def run_single_request(
         text=text,
     )
     
-    metrics.start_time = time.perf_counter()
     first_chunk_received = False
     
-    async with client.stream(
-        "POST",
-        f"{server_url}/generate",
-        json={
-            "target_text": text,
-            "temperature": temperature,
-            "cfg_value": cfg_value,
-            "max_generate_length": max_generate_length,
-        },
-    ) as response:
-        response.raise_for_status()
+    # Create a NEW client for each request (no connection reuse)
+    async with httpx.AsyncClient(timeout=300) as client:
+        # Start timing RIGHT BEFORE sending the request (not including handshake)
+        metrics.start_time = time.perf_counter()
         
-        async for chunk in response.aiter_bytes():
-            if not first_chunk_received:
-                metrics.first_chunk_time = time.perf_counter()
-                first_chunk_received = True
+        async with client.stream(
+            "POST",
+            f"{server_url}/generate",
+            json={
+                "target_text": text,
+                "temperature": temperature,
+                "cfg_value": cfg_value,
+                "max_generate_length": max_generate_length,
+            },
+        ) as response:
+            response.raise_for_status()
             
-            # Each chunk is raw float32 audio
-            metrics.audio_samples += len(chunk) // 4
-            metrics.chunk_count += 1
+            async for chunk in response.aiter_bytes():
+                if not first_chunk_received:
+                    metrics.first_chunk_time = time.perf_counter()
+                    first_chunk_received = True
+                
+                # Each chunk is raw float32 audio
+                metrics.audio_samples += len(chunk) // 4
+                metrics.chunk_count += 1
     
     metrics.end_time = time.perf_counter()
     
@@ -245,16 +248,16 @@ async def run_batch(
 ) -> List[RequestMetrics]:
     """Run a batch of concurrent requests"""
     
-    async with httpx.AsyncClient(timeout=300) as client:
-        tasks = [
-            run_single_request(
-                client, server_url, start_id + i, text, 
-                max_generate_length, temperature, cfg_value
-            )
-            for i, text in enumerate(texts)
-        ]
-        
-        return await asyncio.gather(*tasks)
+    # Each request creates its own client (no connection reuse)
+    tasks = [
+        run_single_request(
+            server_url, start_id + i, text, 
+            max_generate_length, temperature, cfg_value
+        )
+        for i, text in enumerate(texts)
+    ]
+    
+    return await asyncio.gather(*tasks)
 
 
 async def run_benchmark(
@@ -361,8 +364,8 @@ def main():
                         help="Sampling temperature")
     parser.add_argument("--cfg-value", type=float, default=1.5,
                         help="CFG value for classifier-free guidance")
-    parser.add_argument("--warmup", type=int, default=4,
-                        help="Number of warmup requests")
+    parser.add_argument("--warmup", type=int, default=0,
+                        help="Number of warmup requests (server already warm)")
     
     args = parser.parse_args()
     
