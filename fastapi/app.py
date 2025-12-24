@@ -1,19 +1,20 @@
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
-from nanovllm_voxcpm.models.voxcpm.server import AsyncVoxCPMServerPool
+from nanovllm_voxcpm import VoxCPM
 import base64
 from pydantic import BaseModel
 
 app = FastAPI()
 
-MODEL_PATH = "openbmb/VoxCPM1.5"
+MODEL = "openbmb/VoxCPM1.5"
 global_instances = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global_instances["server"] = AsyncVoxCPMServerPool(
-        model_path=MODEL_PATH,
+    # VoxCPM.from_pretrained handles HuggingFace download automatically
+    global_instances["server"] = VoxCPM.from_pretrained(
+        model=MODEL,
         max_num_batched_tokens=4096,   # Optimized for short inputs (~60 tokens)
         max_num_seqs=64,               # Maximized concurrent streams
         max_model_len=512,             # 60 input + 375 audio (15s) + buffer
@@ -41,7 +42,7 @@ class AddPromptRequest(BaseModel):
 @app.post("/add_prompt")
 async def add_prompt(request: AddPromptRequest):
     wav = base64.b64decode(request.wav_base64)
-    server : AsyncVoxCPMServerPool = global_instances["server"]
+    server = global_instances["server"]
 
     prompt_id = await server.add_prompt(wav, request.wav_format, request.prompt_text)
     return {"prompt_id": prompt_id}
@@ -51,7 +52,7 @@ class RemovePromptRequest(BaseModel):
 
 @app.post("/remove_prompt")
 async def remove_prompt(request: RemovePromptRequest):
-    server : AsyncVoxCPMServerPool = global_instances["server"]
+    server = global_instances["server"]
     await server.remove_prompt(request.prompt_id)
     return {"status": "ok"}
 
@@ -70,7 +71,7 @@ async def numpy_to_bytes(gen) :
 
 @app.post("/generate")
 async def generate(request: GenerateRequest):
-    server : AsyncVoxCPMServerPool = global_instances["server"]
+    server = global_instances["server"]
     return StreamingResponse(
         numpy_to_bytes(
             server.generate(

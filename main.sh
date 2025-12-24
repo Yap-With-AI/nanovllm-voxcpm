@@ -94,9 +94,25 @@ else:
 echo -e "${GREEN}✓ CUDA verified${NC}"
 
 # ============================================
-# Step 5: Start FastAPI server
+# Step 5: Download model from HuggingFace
 # ============================================
-echo -e "\n${YELLOW}[5/7] Starting FastAPI server...${NC}"
+echo -e "\n${YELLOW}[5/8] Downloading model from HuggingFace...${NC}"
+
+python3 -c "
+from huggingface_hub import snapshot_download
+import os
+
+model_id = 'openbmb/VoxCPM1.5'
+print(f'Downloading {model_id}...')
+path = snapshot_download(repo_id=model_id)
+print(f'Model downloaded to: {path}')
+"
+echo -e "${GREEN}✓ Model downloaded${NC}"
+
+# ============================================
+# Step 6: Start FastAPI server
+# ============================================
+echo -e "\n${YELLOW}[6/8] Starting FastAPI server...${NC}"
 
 # Kill any existing server on port 8000
 pkill -f "uvicorn app:app" 2>/dev/null || true
@@ -108,7 +124,7 @@ uvicorn app:app --host 0.0.0.0 --port 8000 &
 SERVER_PID=$!
 cd "$SCRIPT_DIR"
 
-echo "Waiting for server to start (this may take a while on first run - downloading model)..."
+echo "Waiting for server to initialize (loading model into GPU)..."
 
 # Wait for server to be ready (with timeout)
 MAX_WAIT=300  # 5 minutes for model download
@@ -130,9 +146,9 @@ if [ $WAITED -ge $MAX_WAIT ]; then
 fi
 
 # ============================================
-# Step 6: Run example.py twice
+# Step 7: Run example.py twice
 # ============================================
-echo -e "\n${YELLOW}[6/7] Running example.py (Run 1 - warmup)...${NC}"
+echo -e "\n${YELLOW}[7/8] Running example.py (Run 1 - warmup)...${NC}"
 echo "----------------------------------------"
 
 python3 example.py \
@@ -143,7 +159,7 @@ python3 example.py \
 
 echo -e "\n${GREEN}✓ Run 1 complete - saved to output_run1.wav${NC}"
 
-echo -e "\n${YELLOW}[6/7] Running example.py (Run 2 - actual performance)...${NC}"
+echo -e "\n${YELLOW}[7/8] Running example.py (Run 2 - actual performance)...${NC}"
 echo "----------------------------------------"
 
 python3 example.py \
@@ -155,9 +171,9 @@ python3 example.py \
 echo -e "\n${GREEN}✓ Run 2 complete - saved to output_run2.wav${NC}"
 
 # ============================================
-# Step 7: Print summary and cleanup
+# Step 8: Print summary and cleanup
 # ============================================
-echo -e "\n${YELLOW}[7/7] Cleanup and Summary${NC}"
+echo -e "\n${YELLOW}[8/8] Cleanup and Summary${NC}"
 
 # Stop the server
 kill $SERVER_PID 2>/dev/null || true
