@@ -65,7 +65,7 @@ echo -e "${GREEN}✓ Flash Attention installed${NC}"
 
 # Install project dependencies
 echo "Installing project dependencies..."
-pip install safetensors huggingface_hub transformers soundfile numpy pydantic xxhash tqdm -q
+pip install safetensors huggingface_hub hf_transfer transformers soundfile numpy pydantic xxhash tqdm -q
 
 # Install FastAPI dependencies
 pip install fastapi uvicorn httpx -q
