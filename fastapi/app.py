@@ -15,7 +15,7 @@ async def lifespan(app: FastAPI):
     # VoxCPM.from_pretrained handles HuggingFace download automatically
     global_instances["server"] = VoxCPM.from_pretrained(
         model=MODEL,
-        max_num_batched_tokens=8192,   # Allow larger text/audio batches for 64-way concurrency
+        max_num_batched_tokens=4096,   # Allow larger text/audio batches for 64-way concurrency
         max_num_seqs=64,               # Maximized concurrent streams on single GPU
         max_model_len=512,             # 60 input + 375 audio (15s) + buffer
         gpu_memory_utilization=0.92,   # Slightly higher GPU use for batching
