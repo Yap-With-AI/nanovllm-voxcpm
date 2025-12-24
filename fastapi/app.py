@@ -15,10 +15,10 @@ async def lifespan(app: FastAPI):
     # VoxCPM.from_pretrained handles HuggingFace download automatically
     global_instances["server"] = VoxCPM.from_pretrained(
         model=MODEL,
-        max_num_batched_tokens=4096,   # Optimized for short inputs (~60 tokens)
-        max_num_seqs=64,               # Maximized concurrent streams
+        max_num_batched_tokens=8192,   # Allow larger text/audio batches for 64-way concurrency
+        max_num_seqs=64,               # Maximized concurrent streams on single GPU
         max_model_len=512,             # 60 input + 375 audio (15s) + buffer
-        gpu_memory_utilization=0.90,   # Reserve 90% GPU memory for max batching
+        gpu_memory_utilization=0.92,   # Slightly higher GPU use for batching
         enforce_eager=False,
         devices=[0],
     )
@@ -31,7 +31,9 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    server = global_instances.get("server")
+    sample_rate = getattr(server, "sample_rate", None)
+    return {"status": "ok", "sample_rate": sample_rate}
 
 
 class AddPromptRequest(BaseModel):
@@ -72,6 +74,7 @@ async def numpy_to_bytes(gen) :
 @app.post("/generate")
 async def generate(request: GenerateRequest):
     server = global_instances["server"]
+    sample_rate = getattr(server, "sample_rate", None)
     return StreamingResponse(
         numpy_to_bytes(
             server.generate(
@@ -85,4 +88,8 @@ async def generate(request: GenerateRequest):
             )
         ),
         media_type="audio/raw",
+        headers={
+            "X-Sample-Rate": str(sample_rate) if sample_rate else "",
+            "X-Dtype": "float32",
+        },
     )

@@ -3,6 +3,12 @@ import json
 from huggingface_hub import snapshot_download
 from typing import List
 import asyncio
+import torch
+
+# Enable fast matmul on Ampere+/Hopper; improves throughput with no quality loss for this use-case.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
 
 try:
     # check if flash-attn is installed

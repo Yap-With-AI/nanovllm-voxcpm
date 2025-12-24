@@ -51,9 +51,14 @@ def main(args):
             
             # Each chunk is raw float32 audio samples
             buffer = b""
-            chunk_size = 4 * 5120  # 5120 float32 samples = 320ms of audio
+            chunk_size = 4 * 2560  # 2560 float32 samples = ~160ms of audio
             
             for data in response.iter_bytes():
+                if first_chunk_time is None:
+                    first_chunk_time = time.perf_counter()
+                    ttfb = (first_chunk_time - start_time) * 1000
+                    print(f"  TTFB: {ttfb:.0f}ms")
+
                 buffer += data
                 
                 while len(buffer) >= chunk_size:
@@ -61,12 +66,6 @@ def main(args):
                     buffer = buffer[chunk_size:]
                     
                     chunk = np.frombuffer(chunk_bytes, dtype=np.float32)
-                    
-                    if first_chunk_time is None:
-                        first_chunk_time = time.perf_counter()
-                        ttfb = (first_chunk_time - start_time) * 1000
-                        print(f"  TTFB: {ttfb:.0f}ms")
-
                     chunks.append(chunk)
                     chunk_count += 1
 
