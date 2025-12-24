@@ -191,6 +191,7 @@ SAMPLE_TEXTS = [
 
 
 async def run_single_request(
+    client: httpx.AsyncClient,
     server_url: str,
     request_id: int,
     text: str,
@@ -198,7 +199,7 @@ async def run_single_request(
     temperature: float,
     cfg_value: float,
 ) -> RequestMetrics:
-    """Run a single TTS request and collect metrics"""
+    """Run a single TTS request and collect metrics (reuses provided client/connection)"""
     
     metrics = RequestMetrics(
         request_id=request_id,
@@ -206,32 +207,30 @@ async def run_single_request(
     )
     
     first_chunk_received = False
+
+    # Start timing RIGHT BEFORE sending the request (not including handshake)
+    metrics.start_time = time.perf_counter()
     
-    # Create a NEW client for each request (no connection reuse)
-    async with httpx.AsyncClient(timeout=300) as client:
-        # Start timing RIGHT BEFORE sending the request (not including handshake)
-        metrics.start_time = time.perf_counter()
+    async with client.stream(
+        "POST",
+        f"{server_url}/generate",
+        json={
+            "target_text": text,
+            "temperature": temperature,
+            "cfg_value": cfg_value,
+            "max_generate_length": max_generate_length,
+        },
+    ) as response:
+        response.raise_for_status()
         
-        async with client.stream(
-            "POST",
-            f"{server_url}/generate",
-            json={
-                "target_text": text,
-                "temperature": temperature,
-                "cfg_value": cfg_value,
-                "max_generate_length": max_generate_length,
-            },
-        ) as response:
-            response.raise_for_status()
+        async for chunk in response.aiter_bytes():
+            if not first_chunk_received:
+                metrics.first_chunk_time = time.perf_counter()
+                first_chunk_received = True
             
-            async for chunk in response.aiter_bytes():
-                if not first_chunk_received:
-                    metrics.first_chunk_time = time.perf_counter()
-                    first_chunk_received = True
-                
-                # Each chunk is raw float32 audio
-                metrics.audio_samples += len(chunk) // 4
-                metrics.chunk_count += 1
+            # Each chunk is raw float32 audio
+            metrics.audio_samples += len(chunk) // 4
+            metrics.chunk_count += 1
     
     metrics.end_time = time.perf_counter()
     
@@ -239,6 +238,7 @@ async def run_single_request(
 
 
 async def run_batch(
+    client: httpx.AsyncClient,
     server_url: str,
     texts: List[str],
     max_generate_length: int,
@@ -246,13 +246,17 @@ async def run_batch(
     cfg_value: float,
     start_id: int = 0,
 ) -> List[RequestMetrics]:
-    """Run a batch of concurrent requests"""
+    """Run a batch of concurrent requests (reusing a shared client/connection pool)"""
     
-    # Each request creates its own client (no connection reuse)
     tasks = [
         run_single_request(
-            server_url, start_id + i, text, 
-            max_generate_length, temperature, cfg_value
+            client,
+            server_url,
+            start_id + i,
+            text,
+            max_generate_length,
+            temperature,
+            cfg_value,
         )
         for i, text in enumerate(texts)
     ]
@@ -268,6 +272,7 @@ async def run_benchmark(
     temperature: float,
     cfg_value: float,
     texts: List[str] = None,
+    warm_connections: bool = True,
 ) -> BenchmarkResults:
     """Run the full benchmark"""
     
@@ -275,36 +280,60 @@ async def run_benchmark(
         texts = SAMPLE_TEXTS
     
     results = BenchmarkResults(concurrency=concurrency)
-    results.total_start_time = time.perf_counter()
     
-    # Process requests in batches of `concurrency`
-    request_id = 0
-    remaining = num_requests
-    
-    while remaining > 0:
-        batch_size = min(concurrency, remaining)
-        batch_texts = [texts[i % len(texts)] for i in range(request_id, request_id + batch_size)]
+    async with httpx.AsyncClient(timeout=300) as client:
+        # Warm connections: send one full batch to establish connections, then discard metrics
+        if warm_connections and num_requests > 0:
+            warm_batch_size = min(concurrency, num_requests)
+            warm_texts = [texts[i % len(texts)] for i in range(warm_batch_size)]
+            print(f"Warming connections with {warm_batch_size} requests (not measured)...")
+            await run_batch(
+                client,
+                server_url,
+                warm_texts,
+                max_generate_length,
+                temperature,
+                cfg_value,
+                start_id=-warm_batch_size,  # negative ids to avoid overlap
+            )
+            print("Warm connection batch complete.\n")
         
-        print(f"Running batch: {request_id + 1}-{request_id + batch_size} of {num_requests}...")
+        results.total_start_time = time.perf_counter()
         
-        batch_metrics = await run_batch(
-            server_url, batch_texts, max_generate_length, temperature, cfg_value, request_id
-        )
+        # Process requests in batches of `concurrency`
+        request_id = 0
+        remaining = num_requests
         
-        for m in batch_metrics:
-            results.add(m)
-            print(f"  Request {m.request_id + 1}: "
-                  f"TTFB={m.ttfb*1000:.0f}ms, "
-                  f"Total={m.total_time:.2f}s, "
-                  f"Audio={m.audio_duration:.2f}s, "
-                  f"RTF={m.rtf:.3f}x")
+        while remaining > 0:
+            batch_size = min(concurrency, remaining)
+            batch_texts = [texts[i % len(texts)] for i in range(request_id, request_id + batch_size)]
+            
+            print(f"Running batch: {request_id + 1}-{request_id + batch_size} of {num_requests}...")
+            
+            batch_metrics = await run_batch(
+                client,
+                server_url,
+                batch_texts,
+                max_generate_length,
+                temperature,
+                cfg_value,
+                request_id,
+            )
+            
+            for m in batch_metrics:
+                results.add(m)
+                print(f"  Request {m.request_id + 1}: "
+                      f"TTFB={m.ttfb*1000:.0f}ms, "
+                      f"Total={m.total_time:.2f}s, "
+                      f"Audio={m.audio_duration:.2f}s, "
+                      f"RTF={m.rtf:.3f}x")
+            
+            request_id += batch_size
+            remaining -= batch_size
         
-        request_id += batch_size
-        remaining -= batch_size
-    
-    results.total_end_time = time.perf_counter()
-    
-    return results
+        results.total_end_time = time.perf_counter()
+        
+        return results
 
 
 async def main_async(args):
@@ -345,6 +374,7 @@ async def main_async(args):
         max_generate_length=args.max_generate_length,
         temperature=args.temperature,
         cfg_value=args.cfg_value,
+        warm_connections=not args.no_warm_connections,
     )
     
     results.print_report()
@@ -366,6 +396,8 @@ def main():
                         help="CFG value for classifier-free guidance")
     parser.add_argument("--warmup", type=int, default=0,
                         help="Number of warmup requests (server already warm)")
+    parser.add_argument("--no-warm-connections", action="store_true",
+                        help="Disable pre-connection warm batch (measures first-use handshakes)")
     
     args = parser.parse_args()
     
