@@ -22,9 +22,9 @@ class VoxCPM:
     def from_pretrained(
         model: str,
         inference_timesteps : int = 9,
-        max_num_batched_tokens : int = 16384,
-        max_num_seqs : int = 512,
-        max_model_len : int = 4096,
+        max_num_batched_tokens : int = 20480,
+        max_num_seqs : int = 40,
+        max_model_len : int = 512,
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
         devices : List[int] = [],

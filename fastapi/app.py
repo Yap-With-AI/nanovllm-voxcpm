@@ -15,8 +15,8 @@ async def lifespan(app: FastAPI):
     # VoxCPM.from_pretrained handles HuggingFace download automatically
     global_instances["server"] = VoxCPM.from_pretrained(
         model=MODEL,
-        max_num_batched_tokens=2800,   # Lower to reduce batching delay for TTFB
-        max_num_seqs=40,               # Limit concurrent sequences to cut queueing latency
+        max_num_batched_tokens=20480,  # Supports full 40-way batching at 512 max len
+        max_num_seqs=40,               # Limit concurrent sequences
         max_model_len=512,             # 60 input + 375 audio (15s) + buffer
         gpu_memory_utilization=0.92,   # Slightly higher GPU use for batching
         enforce_eager=False,
