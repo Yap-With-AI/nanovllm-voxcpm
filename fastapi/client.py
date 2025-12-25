@@ -8,7 +8,8 @@ import sys
 
 
 async def tts_request(session: aiohttp.ClientSession, server: str, text: str):
-    async with session.post(f"{server}/generate", json={"target_text": text}) as response:
+    url = f"{server}/generate"
+    async with session.post(url, json={"target_text": text}) as response:
         response.raise_for_status()
         sample_rate_str = response.headers.get("X-Sample-Rate", "44100")
         sample_rate = int(sample_rate_str) if sample_rate_str else 44100
@@ -19,6 +20,8 @@ async def tts_request(session: aiohttp.ClientSession, server: str, text: str):
 
 
 async def run(texts, server: str, concurrency: int, save_first: int, out_dir: Path):
+    # Normalize server URL - remove trailing slash to avoid double slashes
+    server = server.rstrip("/")
     connector = aiohttp.TCPConnector(limit=concurrency)
     tasks = set()
     cnt = 0
@@ -38,6 +41,9 @@ async def run(texts, server: str, concurrency: int, save_first: int, out_dir: Pa
             for task in done:
                 try:
                     audio, sample_rate = task.result()
+                except aiohttp.ClientResponseError as e:
+                    print(f"Request failed: {e.status}, message='{e.message}', url='{e.request_info.url}'", file=sys.stderr)
+                    continue
                 except Exception as e:
                     print(f"Request failed: {e}", file=sys.stderr)
                     continue
