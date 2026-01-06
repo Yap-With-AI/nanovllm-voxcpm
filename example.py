@@ -121,7 +121,7 @@ if __name__ == "__main__":
                         help="Text to synthesize")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature")
-    parser.add_argument("--cfg-value", type=float, default=1.5,
+    parser.add_argument("--cfg-value", type=float, default=2.0,
                         help="CFG value for classifier-free guidance")
     parser.add_argument("--max-generate-length", type=int, default=400,
                         help="Max audio tokens (~15s at 400)")

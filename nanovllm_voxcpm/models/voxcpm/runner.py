@@ -20,7 +20,7 @@ class VoxCPMPayload:
     feat_masks : np.ndarray | None = None
     
     temperature : float = 1.0
-    cfg_value : float = 1.0
+    cfg_value : float = 2.0
 
     # (T, D)
     padding_decode : np.ndarray | None = None

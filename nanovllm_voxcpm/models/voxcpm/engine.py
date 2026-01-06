@@ -109,7 +109,7 @@ class VoxCPMEngine(LLMEngineBase):
             prompt_latents : np.ndarray = None,
             max_generate_length : int = 2000,
             temperature : float = 1.0,
-            cfg_value : float = 1.0,
+            cfg_value : float = 2.0,
         ):
         text_tokens = self.tokenizer(prompt_text + target_text) + [self.audio_start_token]
         audio_feat = np.zeros((len(text_tokens), self.patch_size, self.feat_dim), dtype=np.float32)

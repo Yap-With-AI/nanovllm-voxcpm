@@ -18,9 +18,9 @@ def gen_uuid() -> str:
 class VoxCPMServerImpl:
     def __init__(self,
         model_path : str,
-        inference_timesteps : int = 12,
-        max_num_batched_tokens : int = 20480,
-        max_num_seqs : int = 40,
+        inference_timesteps : int = 25,
+        max_num_batched_tokens : int = 24576,
+        max_num_seqs : int = 48,
         max_model_len : int = 512,
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
@@ -72,7 +72,7 @@ class VoxCPMServerImpl:
         prompt_text : str = "",
         max_generate_length : int = 2000,
         temperature : float = 1.0,
-        cfg_value : float = 1.0
+        cfg_value : float = 2.0
     ):
         if prompt_latents is not None:
             if len(prompt_text) == 0:
@@ -185,9 +185,9 @@ def main_loop(
 class AsyncVoxCPMServer:
     def __init__(self,
         model_path : str,
-        inference_timesteps : int = 12,
-        max_num_batched_tokens : int = 20480,
-        max_num_seqs : int = 40,
+        inference_timesteps : int = 25,
+        max_num_batched_tokens : int = 24576,
+        max_num_seqs : int = 48,
         max_model_len : int = 512,
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
@@ -295,9 +295,9 @@ class AsyncVoxCPMServer:
 class AsyncVoxCPMServerPool:
     def __init__(self,
         model_path : str,
-        inference_timesteps : int = 12,
-        max_num_batched_tokens : int = 20480,
-        max_num_seqs : int = 40,
+        inference_timesteps : int = 25,
+        max_num_batched_tokens : int = 24576,
+        max_num_seqs : int = 48,
         max_model_len : int = 512,
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,

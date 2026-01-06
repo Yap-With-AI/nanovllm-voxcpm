@@ -77,7 +77,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 # Check if flash-attn is installed
 if ! python -c "import flash_attn" 2>/dev/null; then
     echo "Installing Flash Attention build dependencies..."
-    pip install ninja psutil packaging -q
+    pip install ninja psutil packaging wheel -q
     echo "Installing Flash Attention (this may take several minutes - compiling CUDA kernels)..."
     pip install flash-attn --no-build-isolation
 fi
@@ -175,7 +175,7 @@ python3 example.py \
     --text "Hello, this is the first test run. The model is warming up and loading into GPU memory." \
     --output output_run1.wav \
     --temperature 1.0 \
-    --cfg-value 1.5
+    --cfg-value 2.0
 
 echo -e "\n${GREEN}✓ Run 1 complete - saved to output_run1.wav${NC}"
 
@@ -186,7 +186,7 @@ python3 example.py \
     --text "This is the second test run. The model should now be fully warmed up and running at optimal speed. This demonstrates real-time streaming text to speech synthesis." \
     --output output_run2.wav \
     --temperature 1.0 \
-    --cfg-value 1.5
+    --cfg-value 2.0
 
 echo -e "\n${GREEN}✓ Run 2 complete - saved to output_run2.wav${NC}"
 

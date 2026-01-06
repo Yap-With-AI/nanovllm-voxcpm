@@ -21,9 +21,9 @@ class VoxCPM:
     @staticmethod
     def from_pretrained(
         model: str,
-        inference_timesteps : int = 12,
-        max_num_batched_tokens : int = 20480,
-        max_num_seqs : int = 40,
+        inference_timesteps : int = 25,
+        max_num_batched_tokens : int = 24576,
+        max_num_seqs : int = 48,
         max_model_len : int = 512,
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,

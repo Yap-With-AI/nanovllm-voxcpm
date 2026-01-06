@@ -11,7 +11,7 @@ Features:
 
 ```bash
 # Run the setup script (installs deps, downloads model, starts server)
-./main.sh
+bash main.sh
 ```
 
 The script will:
@@ -43,7 +43,7 @@ cd fastapi && uvicorn app:app --host 0.0.0.0 --port 8000
 ```bash
 source venv/bin/activate
 python example.py --text "Hello, this is a test."
-python example.py --text "Your text here" --temperature 0.8 --cfg-value 2.0
+python example.py --text "Your text here" --temperature 0.8 --cfg-value 2
 ```
 
 ### Run Benchmark
@@ -63,7 +63,7 @@ python benchmark.py \
   --num-requests 64 \
   --concurrency 32 \
   --temperature 1.0 \
-  --cfg-value 1.5 \
+  --cfg-value 2 \
   --max-generate-length 400 \
   --warmup 4
 ```

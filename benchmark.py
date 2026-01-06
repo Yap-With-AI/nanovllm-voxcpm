@@ -386,13 +386,13 @@ def main():
                         help="FastAPI server URL")
     parser.add_argument("--num-requests", type=int, default=32,
                         help="Total number of requests to run")
-    parser.add_argument("--concurrency", type=int, default=16,
+    parser.add_argument("--concurrency", type=int, default=32,
                         help="Number of concurrent requests")
     parser.add_argument("--max-generate-length", type=int, default=400,
                         help="Max audio tokens per request (~15s)")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Sampling temperature")
-    parser.add_argument("--cfg-value", type=float, default=1.5,
+    parser.add_argument("--cfg-value", type=float, default=2.0,
                         help="CFG value for classifier-free guidance")
     parser.add_argument("--warmup", type=int, default=0,
                         help="Number of warmup requests (server already warm)")
