@@ -7,9 +7,9 @@ import soundfile as sf
 import sys
 
 
-async def tts_request(session: aiohttp.ClientSession, server: str, text: str):
+async def tts_request(session: aiohttp.ClientSession, server: str, text: str, temperature: float, cfg_value: float):
     url = f"{server}/generate"
-    async with session.post(url, json={"target_text": text}) as response:
+    async with session.post(url, json={"target_text": text, "temperature": temperature, "cfg_value": cfg_value}) as response:
         response.raise_for_status()
         sample_rate_str = response.headers.get("X-Sample-Rate", "44100")
         sample_rate = int(sample_rate_str) if sample_rate_str else 44100
@@ -19,7 +19,7 @@ async def tts_request(session: aiohttp.ClientSession, server: str, text: str):
         return audio, sample_rate
 
 
-async def run(texts, server: str, concurrency: int, save_first: int, out_dir: Path):
+async def run(texts, server: str, concurrency: int, save_first: int, out_dir: Path, temperature: float, cfg_value: float):
     # Normalize server URL - remove trailing slash to avoid double slashes
     server = server.rstrip("/")
     connector = aiohttp.TCPConnector(limit=concurrency)
@@ -30,11 +30,12 @@ async def run(texts, server: str, concurrency: int, save_first: int, out_dir: Pa
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Starting {len(texts)} request(s) to {server} with concurrency={concurrency}")
+    print(f"Temperature: {temperature}, CFG: {cfg_value}")
 
     async with aiohttp.ClientSession(connector=connector) as session:
         while task_idx < len(texts) or tasks:
             while len(tasks) < concurrency and task_idx < len(texts):
-                tasks.add(asyncio.create_task(tts_request(session, server, texts[task_idx])))
+                tasks.add(asyncio.create_task(tts_request(session, server, texts[task_idx], temperature, cfg_value)))
                 task_idx += 1
 
             done, tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -76,10 +77,12 @@ def main():
     parser.add_argument("--concurrency", type=int, default=8, help="Number of concurrent requests")
     parser.add_argument("--save-first", type=int, default=5, help="How many responses to save to WAV")
     parser.add_argument("--out-dir", type=str, default="outs", help="Directory to save WAVs")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
+    parser.add_argument("--cfg-value", type=float, default=2.0, help="CFG value for classifier-free guidance")
 
     args = parser.parse_args()
     texts = load_texts(args)
-    asyncio.run(run(texts, args.server, args.concurrency, args.save_first, Path(args.out_dir)))
+    asyncio.run(run(texts, args.server, args.concurrency, args.save_first, Path(args.out_dir), args.temperature, args.cfg_value))
 
 
 if __name__ == "__main__":
