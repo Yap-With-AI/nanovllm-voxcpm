@@ -76,10 +76,20 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 # Check if flash-attn is installed
 if ! python -c "import flash_attn" 2>/dev/null; then
-    echo "Installing Flash Attention build dependencies..."
-    pip install ninja psutil packaging wheel -q
-    echo "Installing Flash Attention (this may take several minutes - compiling CUDA kernels)..."
-    pip install flash-attn --no-build-isolation
+    echo "Installing Flash Attention..."
+    pip install einops -q
+    
+    # Get Python version for wheel selection
+    PY_VER=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+    WHEEL_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-${PY_VER}-${PY_VER}-linux_x86_64.whl"
+    
+    echo "Trying pre-built wheel: $WHEEL_URL"
+    if ! pip install "$WHEEL_URL" -q 2>/dev/null; then
+        echo "Pre-built wheel not available, building from source..."
+        pip install ninja psutil packaging wheel -q
+        # Set TMPDIR to avoid cross-device link errors in containers
+        TMPDIR="$SCRIPT_DIR/.tmp" pip install flash-attn --no-build-isolation
+    fi
 fi
 echo -e "${GREEN}✓ Flash Attention installed${NC}"
 
