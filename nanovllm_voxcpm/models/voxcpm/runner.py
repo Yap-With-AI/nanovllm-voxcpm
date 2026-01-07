@@ -400,6 +400,9 @@ class VoxCPMRunner(BaseModelRunner):
             # Async VAE: run VAE decode on separate stream, overlap with CPU operations
             # This allows VAE GPU compute to run while we transfer other data to CPU
             vae_event = torch.cuda.Event()
+            # VAE stream must wait for default stream to finish populating vae_decoder_inputs
+            # (the non_blocking=True copies above may not be complete yet)
+            self.vae_stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(self.vae_stream):
                 vae_decoder_outputs_gpu = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :]
                 vae_event.record()
