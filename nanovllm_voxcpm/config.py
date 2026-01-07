@@ -1,7 +1,7 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pydantic import BaseModel
-from typing import Generic, TypeVar, List, Optional
+from typing import Generic, TypeVar, List, Optional, Literal
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -22,6 +22,16 @@ class Config(Generic[T]):
     
     # LoRA configuration
     lora_path: Optional[str] = None
+    
+    # torch.compile configuration
+    use_torch_compile: bool = False
+    compile_mode: Literal["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"] = "reduce-overhead"
+    # Which submodules to compile: "all", "estimator", "encoder", "lm"
+    compile_targets: List[str] = field(default_factory=lambda: ["estimator"])
+    # Use fullgraph=True for maximum optimization (may fail on complex control flow)
+    compile_fullgraph: bool = False
+    # Dynamic shapes - set to True for variable batch/seq lengths
+    compile_dynamic: bool = True
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
@@ -30,3 +40,7 @@ class Config(Generic[T]):
         assert self.max_num_batched_tokens >= self.max_model_len
         if self.lora_path is not None:
             assert os.path.isdir(self.lora_path), f"LoRA path {self.lora_path} does not exist"
+        if self.use_torch_compile:
+            valid_targets = {"all", "estimator", "encoder", "lm", "residual_lm"}
+            for target in self.compile_targets:
+                assert target in valid_targets, f"Invalid compile target: {target}. Valid: {valid_targets}"

@@ -29,6 +29,12 @@ class VoxCPM:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path: Optional[str] = None,
+        # torch.compile options for improved performance
+        use_torch_compile: bool = False,
+        compile_mode: str = "reduce-overhead",
+        compile_targets: Optional[List[str]] = None,
+        compile_fullgraph: bool = False,
+        compile_dynamic: bool = True,
         **kwargs,
     ):
         """Load VoxCPM model from pretrained weights.
@@ -44,6 +50,13 @@ class VoxCPM:
             devices: List of GPU device indices to use
             lora_path: Path to LoRA weights directory containing lora_config.json 
                        and lora_weights.safetensors (or lora_weights.bin)
+            use_torch_compile: Enable torch.compile for optimized inference
+            compile_mode: Compilation mode - "default", "reduce-overhead" (best for latency), 
+                         "max-autotune" (best throughput, longer compile), "max-autotune-no-cudagraphs"
+            compile_targets: Which submodules to compile - ["estimator"], ["encoder"], ["lm"], 
+                            ["residual_lm"], or ["all"]. Default: ["estimator"] (the DiT model)
+            compile_fullgraph: Use fullgraph=True for maximum optimization (may fail on dynamic control flow)
+            compile_dynamic: Use dynamic shapes (recommended for variable batch sizes). Default: True
             **kwargs: Additional arguments
         
         Returns:
@@ -93,6 +106,15 @@ class VoxCPM:
         if arch == "voxcpm":
             from nanovllm_voxcpm.models.voxcpm.server import AsyncVoxCPMServerPool, SyncVoxCPMServerPool
 
+            # Common compile options
+            compile_opts = dict(
+                use_torch_compile=use_torch_compile,
+                compile_mode=compile_mode,
+                compile_targets=compile_targets if compile_targets is not None else ["estimator"],
+                compile_fullgraph=compile_fullgraph,
+                compile_dynamic=compile_dynamic,
+            )
+
             if is_async_mode:
                 return AsyncVoxCPMServerPool(
                     model_path=model_path,
@@ -104,6 +126,7 @@ class VoxCPM:
                     enforce_eager=enforce_eager,
                     devices=devices,
                     lora_path=resolved_lora_path,
+                    **compile_opts,
                     **kwargs,
                 )
             else:
@@ -117,6 +140,7 @@ class VoxCPM:
                     enforce_eager=enforce_eager,
                     devices=devices,
                     lora_path=resolved_lora_path,
+                    **compile_opts,
                     **kwargs,
                 )
         else:

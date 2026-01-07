@@ -26,6 +26,12 @@ class VoxCPMServerImpl:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path : str | None = None,
+        # torch.compile options
+        use_torch_compile: bool = False,
+        compile_mode: str = "reduce-overhead",
+        compile_targets: List[str] | None = None,
+        compile_fullgraph: bool = False,
+        compile_dynamic: bool = True,
     ):
         model_config = VoxCPMConfig.model_validate_json(
             open(os.path.join(model_path, "config.json")).read()
@@ -43,6 +49,12 @@ class VoxCPMServerImpl:
             model_config=model_config,
             devices=devices,
             lora_path=lora_path,
+            # torch.compile options
+            use_torch_compile=use_torch_compile,
+            compile_mode=compile_mode,
+            compile_targets=compile_targets if compile_targets is not None else ["estimator"],
+            compile_fullgraph=compile_fullgraph,
+            compile_dynamic=compile_dynamic,
         )
 
         self.llm = VoxCPMEngine(engine_config)
@@ -197,6 +209,12 @@ class AsyncVoxCPMServer:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path : str | None = None,
+        # torch.compile options
+        use_torch_compile: bool = False,
+        compile_mode: str = "reduce-overhead",
+        compile_targets: List[str] | None = None,
+        compile_fullgraph: bool = False,
+        compile_dynamic: bool = True,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -207,7 +225,18 @@ class AsyncVoxCPMServer:
         self.queue_out = ctx.Queue()
         self.process = ctx.Process(
             target=main_loop, 
-            args=(self.queue_in, self.queue_out, (model_path, inference_timesteps, max_num_batched_tokens, max_num_seqs, max_model_len, gpu_memory_utilization, enforce_eager, devices, lora_path), {}),
+            args=(
+                self.queue_in, 
+                self.queue_out, 
+                (model_path, inference_timesteps, max_num_batched_tokens, max_num_seqs, max_model_len, gpu_memory_utilization, enforce_eager, devices, lora_path), 
+                {
+                    "use_torch_compile": use_torch_compile,
+                    "compile_mode": compile_mode,
+                    "compile_targets": compile_targets,
+                    "compile_fullgraph": compile_fullgraph,
+                    "compile_dynamic": compile_dynamic,
+                }
+            ),
             daemon=True,
         )
         self.process.start()
@@ -308,6 +337,12 @@ class AsyncVoxCPMServerPool:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path : str | None = None,
+        # torch.compile options
+        use_torch_compile: bool = False,
+        compile_mode: str = "reduce-overhead",
+        compile_targets: List[str] | None = None,
+        compile_fullgraph: bool = False,
+        compile_dynamic: bool = True,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -324,6 +359,11 @@ class AsyncVoxCPMServerPool:
                 enforce_eager=enforce_eager,
                 devices=[device_idx],
                 lora_path=lora_path,
+                use_torch_compile=use_torch_compile,
+                compile_mode=compile_mode,
+                compile_targets=compile_targets,
+                compile_fullgraph=compile_fullgraph,
+                compile_dynamic=compile_dynamic,
             )
             for device_idx in devices
         ]
@@ -399,6 +439,12 @@ class SyncVoxCPMServerPool:
             enforce_eager: bool = False,
             devices : List[int] = [],
             lora_path : str | None = None,
+            # torch.compile options
+            use_torch_compile: bool = False,
+            compile_mode: str = "reduce-overhead",
+            compile_targets: List[str] | None = None,
+            compile_fullgraph: bool = False,
+            compile_dynamic: bool = True,
             **kwargs,
         ):
         async def init_async_server_pool():
@@ -412,6 +458,11 @@ class SyncVoxCPMServerPool:
                 enforce_eager=enforce_eager,
                 devices=devices,
                 lora_path=lora_path,
+                use_torch_compile=use_torch_compile,
+                compile_mode=compile_mode,
+                compile_targets=compile_targets,
+                compile_fullgraph=compile_fullgraph,
+                compile_dynamic=compile_dynamic,
                 **kwargs,
             )
 

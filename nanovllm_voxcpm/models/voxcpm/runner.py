@@ -3,6 +3,7 @@ import torch
 from multiprocessing.synchronize import Event
 import json
 import logging
+from typing import List
 
 from nanovllm_voxcpm.config import Config
 from nanovllm_voxcpm.engine.model_runner import RunnerTask, BaseModelRunner
@@ -20,6 +21,63 @@ except ImportError:
     SAFETENSORS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_torch_compile(
+    model: VoxCPMModel,
+    targets: List[str],
+    mode: str,
+    fullgraph: bool,
+    dynamic: bool,
+) -> VoxCPMModel:
+    """Apply torch.compile to specified model submodules.
+    
+    Args:
+        model: The VoxCPMModel instance
+        targets: List of targets to compile: "all", "estimator", "encoder", "lm", "residual_lm"
+        mode: Compilation mode - "default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"
+        fullgraph: Whether to compile with fullgraph=True (stricter, may fail on dynamic control flow)
+        dynamic: Whether to use dynamic shapes (recommended for variable batch sizes)
+    
+    Returns:
+        The model with compiled submodules
+    """
+    compile_kwargs = {
+        "mode": mode,
+        "fullgraph": fullgraph,
+        "dynamic": dynamic,
+    }
+    
+    if "all" in targets:
+        # Compile the entire model - simplest but may have issues with complex control flow
+        logger.info(f"Compiling entire VoxCPMModel with mode={mode}, fullgraph={fullgraph}, dynamic={dynamic}")
+        return torch.compile(model, **compile_kwargs)
+    
+    # Compile individual submodules for finer control
+    if "estimator" in targets:
+        # The DiT estimator is called multiple times per inference (inference_timesteps times)
+        # This is the highest-value target for compilation
+        logger.info(f"Compiling feat_decoder.estimator (DiT) with mode={mode}")
+        model.feat_decoder.estimator = torch.compile(
+            model.feat_decoder.estimator, **compile_kwargs
+        )
+    
+    if "encoder" in targets:
+        # Local encoder for feature encoding
+        logger.info(f"Compiling feat_encoder (VoxCPMLocEnc) with mode={mode}")
+        model.feat_encoder = torch.compile(model.feat_encoder, **compile_kwargs)
+    
+    if "lm" in targets:
+        # Base language model - most parameters, significant compute
+        logger.info(f"Compiling base_lm (Cpm4Model) with mode={mode}")
+        model.base_lm = torch.compile(model.base_lm, **compile_kwargs)
+    
+    if "residual_lm" in targets:
+        # Residual acoustic LM
+        logger.info(f"Compiling residual_lm (Cpm4Model) with mode={mode}")
+        model.residual_lm = torch.compile(model.residual_lm, **compile_kwargs)
+    
+    return model
 
 @dataclass
 class VoxCPMPayload:
@@ -43,6 +101,14 @@ class VoxCPMRunner(BaseModelRunner):
         self.feat_dim = config.model_config.feat_dim
         self.patch_size = config.model_config.patch_size
         self.lora_path = getattr(config, 'lora_path', None)
+        
+        # torch.compile configuration
+        self.use_torch_compile = getattr(config, 'use_torch_compile', False)
+        self.compile_mode = getattr(config, 'compile_mode', 'reduce-overhead')
+        self.compile_targets = getattr(config, 'compile_targets', ['estimator'])
+        self.compile_fullgraph = getattr(config, 'compile_fullgraph', False)
+        self.compile_dynamic = getattr(config, 'compile_dynamic', True)
+        
         super().__init__(config, rank, device_idx, distributed_port, event)
     
     @property
@@ -62,6 +128,18 @@ class VoxCPMRunner(BaseModelRunner):
         # Load LoRA weights if configured
         if self.lora_path is not None and lora_config is not None:
             self._load_lora_weights(self.lora_path)
+        
+        # Apply torch.compile if configured
+        # Note: Compile AFTER loading weights but BEFORE CUDA graph capture
+        if self.use_torch_compile:
+            logger.info(f"Applying torch.compile with targets={self.compile_targets}, mode={self.compile_mode}")
+            self.model = _apply_torch_compile(
+                self.model,
+                targets=self.compile_targets,
+                mode=self.compile_mode,
+                fullgraph=self.compile_fullgraph,
+                dynamic=self.compile_dynamic,
+            )
 
         torch.set_default_dtype(torch.float32)
         self.vae = AudioVAE() if model_config.audio_vae_config is None else AudioVAE(**model_config.audio_vae_config.model_dump(mode="dict"))
