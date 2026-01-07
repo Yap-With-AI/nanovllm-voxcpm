@@ -81,16 +81,18 @@ class LoRALinear(nn.Module):
 
 
 class QKVLoRAAdapter(nn.Module):
-    """LoRA adapter for merged QKV projections.
+    """LoRA adapter for merged QKV projections with pre-computed deltas.
     
     The base model uses merged QKVParallelLinear, but LoRA weights are trained
     with separate q_proj, k_proj, v_proj. This adapter stores the separate LoRA
-    weights and computes the LoRA delta to add to the merged QKV output.
+    weights and pre-computes delta = lora_B @ lora_A * scale for fast inference.
     
     State dict structure (matching trained weights):
         - q_proj.lora_A, q_proj.lora_B
         - k_proj.lora_A, k_proj.lora_B  
         - v_proj.lora_A, v_proj.lora_B
+    
+    Call compute_deltas() after loading weights to pre-compute for fast inference.
     """
     
     def __init__(
@@ -126,6 +128,13 @@ class QKVLoRAAdapter(nn.Module):
             self.v_proj_lora_B = nn.Parameter(torch.zeros(kv_output_size, r))
             
             self._init_lora_weights()
+            
+            # Pre-computed deltas (lora_B @ lora_A * scale) for fast inference
+            # These are buffers, not parameters - computed once after loading
+            self.register_buffer("_delta_q", torch.zeros(q_output_size, hidden_size), persistent=False)
+            self.register_buffer("_delta_k", torch.zeros(kv_output_size, hidden_size), persistent=False)
+            self.register_buffer("_delta_v", torch.zeros(kv_output_size, hidden_size), persistent=False)
+            self._deltas_computed = False
         else:
             self.q_proj_lora_A = None
             self.q_proj_lora_B = None
@@ -133,6 +142,10 @@ class QKVLoRAAdapter(nn.Module):
             self.k_proj_lora_B = None
             self.v_proj_lora_A = None
             self.v_proj_lora_B = None
+            self._delta_q = None
+            self._delta_k = None
+            self._delta_v = None
+            self._deltas_computed = True
         
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
     
@@ -142,8 +155,23 @@ class QKVLoRAAdapter(nn.Module):
         for name in ['q_proj_lora_B', 'k_proj_lora_B', 'v_proj_lora_B']:
             nn.init.zeros_(getattr(self, name))
     
+    @torch.no_grad()
+    def compute_deltas(self) -> None:
+        """Pre-compute delta matrices for fast inference.
+        
+        Computes delta = lora_B @ lora_A * scale for each projection.
+        Call this after loading LoRA weights.
+        """
+        if self.r <= 0:
+            return
+        scale = self._base_scaling
+        self._delta_q.copy_(self.q_proj_lora_B @ self.q_proj_lora_A * scale)
+        self._delta_k.copy_(self.k_proj_lora_B @ self.k_proj_lora_A * scale)
+        self._delta_v.copy_(self.v_proj_lora_B @ self.v_proj_lora_A * scale)
+        self._deltas_computed = True
+    
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute LoRA deltas for Q, K, V.
+        """Compute LoRA deltas for Q, K, V using pre-computed delta matrices.
         
         Args:
             x: Input tensor [batch, seq, hidden] or [seq, hidden]
@@ -151,27 +179,30 @@ class QKVLoRAAdapter(nn.Module):
         Returns:
             Tuple of (delta_q, delta_k, delta_v) to add to base Q, K, V outputs
         """
-        # Compute LoRA contributions (scaling handles enable/disable without CPU sync)
-        delta_q = F.linear(F.linear(x, self.q_proj_lora_A), self.q_proj_lora_B)
-        delta_k = F.linear(F.linear(x, self.k_proj_lora_A), self.k_proj_lora_B)
-        delta_v = F.linear(F.linear(x, self.v_proj_lora_A), self.v_proj_lora_B)
+        # Single matmul per projection using pre-computed deltas
+        delta_q = F.linear(x, self._delta_q)
+        delta_k = F.linear(x, self._delta_k)
+        delta_v = F.linear(x, self._delta_v)
         
-        scale = self.scaling
         return (
-            self.dropout(delta_q) * scale,
-            self.dropout(delta_k) * scale,
-            self.dropout(delta_v) * scale,
+            self.dropout(delta_q),
+            self.dropout(delta_k),
+            self.dropout(delta_v),
         )
     
     def set_enabled(self, enabled: bool) -> None:
         self.scaling.fill_(self._base_scaling if enabled else 0.0)
+        # Recompute deltas with new scaling
+        self.compute_deltas()
 
 
 class OutputLoRAAdapter(nn.Module):
-    """LoRA adapter for output projection (o_proj).
+    """LoRA adapter for output projection (o_proj) with pre-computed delta.
     
     State dict structure:
         - lora_A, lora_B (or o_proj.lora_A, o_proj.lora_B)
+    
+    Call compute_deltas() after loading weights to pre-compute for fast inference.
     """
     
     def __init__(
@@ -196,20 +227,41 @@ class OutputLoRAAdapter(nn.Module):
             self.lora_B = nn.Parameter(torch.zeros(output_size, r))
             nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
             nn.init.zeros_(self.lora_B)
+            
+            # Pre-computed delta for fast inference
+            self.register_buffer("_delta", torch.zeros(output_size, input_size), persistent=False)
+            self._delta_computed = False
         else:
             self.lora_A = None
             self.lora_B = None
+            self._delta = None
+            self._delta_computed = True
         
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
     
+    @torch.no_grad()
+    def compute_deltas(self) -> None:
+        """Pre-compute delta matrix for fast inference.
+        
+        Computes delta = lora_B @ lora_A * scale.
+        Call this after loading LoRA weights.
+        """
+        if self.r <= 0:
+            return
+        scale = self._base_scaling
+        self._delta.copy_(self.lora_B @ self.lora_A * scale)
+        self._delta_computed = True
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute LoRA delta for output projection."""
-        # scaling handles enable/disable without CPU sync
-        delta = F.linear(F.linear(x, self.lora_A), self.lora_B)
-        return self.dropout(delta) * self.scaling
+        """Compute LoRA delta for output projection using pre-computed delta."""
+        # Single matmul using pre-computed delta
+        delta = F.linear(x, self._delta)
+        return self.dropout(delta)
     
     def set_enabled(self, enabled: bool) -> None:
         self.scaling.fill_(self._base_scaling if enabled else 0.0)
+        # Recompute delta with new scaling
+        self.compute_deltas()
 
 
 def _get_parent_module(root: nn.Module, name: str) -> Optional[nn.Module]:

@@ -875,7 +875,16 @@ class VoxCPMModel(nn.Module):
             else:
                 skipped_keys.append(key)
 
+        # Pre-compute delta matrices for fast inference (1 matmul instead of 2)
+        self._compute_lora_deltas()
+
         return loaded_keys, skipped_keys
+
+    def _compute_lora_deltas(self) -> None:
+        """Pre-compute LoRA delta matrices for all adapters."""
+        for module in self._iter_lora_modules():
+            if hasattr(module, 'compute_deltas'):
+                module.compute_deltas()
 
     def set_lora_enabled(self, enabled: bool) -> None:
         """Enable/disable all LoRA layers."""
