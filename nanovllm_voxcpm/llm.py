@@ -45,7 +45,7 @@ class VoxCPM:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill for reduced TTFB under concurrency
-        prefill_chunk_size: int = 64,
+        prefill_chunk_size: int = 128,
         **kwargs,
     ):
         """Load VoxCPM model from pretrained weights.
@@ -72,7 +72,7 @@ class VoxCPM:
             compile_fullgraph: Use fullgraph=True for maximum optimization (may fail on dynamic control flow)
             compile_dynamic: Use dynamic shapes (recommended for variable batch sizes). Default: True
             prefill_chunk_size: Tokens per prefill chunk. Smaller = lower TTFB, slightly lower throughput.
-                               Set to 0 to disable chunking. Default: 64
+                               Set to 0 to disable chunking. Default: 256
             **kwargs: Additional arguments
         
         Returns:
