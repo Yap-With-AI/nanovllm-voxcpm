@@ -45,13 +45,22 @@ echo -e "\n${YELLOW}[0/8] Cleaning up existing processes...${NC}"
 # Kill any existing uvicorn/python processes related to this project
 pkill -f "uvicorn app:app" 2>/dev/null || true
 pkill -f "nanovllm_voxcpm" 2>/dev/null || true
+sleep 1
+
+# Kill ALL spawned Python processes using the GPU (catches orphaned child processes)
+# This is aggressive but necessary because multiprocessing spawned children don't get caught by pkill -f
+for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null); do
+    echo "Killing GPU process: $pid"
+    kill -9 "$pid" 2>/dev/null || true
+done
 sleep 2
 
-# Clear GPU memory
+# Clear GPU memory via PyTorch
 python3 -c "
 import torch
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
     print('GPU memory cache cleared')
 " 2>/dev/null || true
 

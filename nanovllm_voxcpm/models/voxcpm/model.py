@@ -11,7 +11,7 @@ import math
 
 from nanovllm_voxcpm.models.voxcpm.config import MiniCPM4Config, CfmConfig, VoxCPMConfig, LoRAConfig
 from nanovllm_voxcpm.utils.context import get_context
-from nanovllm_voxcpm.layers.lora import LoRALinear, apply_lora_to_named_linear_modules, QKVLoRAAdapter, OutputLoRAAdapter
+from nanovllm_voxcpm.layers.lora import LoRALinear, QKVLoRAAdapter, OutputLoRAAdapter
 
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
