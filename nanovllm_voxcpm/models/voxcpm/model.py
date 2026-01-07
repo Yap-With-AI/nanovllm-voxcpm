@@ -9,8 +9,9 @@ from nanovllm_voxcpm.layers.linear import QKVParallelLinear, MergedColumnParalle
 from nanovllm_voxcpm.layers.embed_head import VocabParallelEmbedding
 import math
 
-from nanovllm_voxcpm.models.voxcpm.config import MiniCPM4Config, CfmConfig, VoxCPMConfig
+from nanovllm_voxcpm.models.voxcpm.config import MiniCPM4Config, CfmConfig, VoxCPMConfig, LoRAConfig
 from nanovllm_voxcpm.utils.context import get_context
+from nanovllm_voxcpm.layers.lora import LoRALinear, apply_lora_to_named_linear_modules, QKVLoRAAdapter, OutputLoRAAdapter
 
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
@@ -169,6 +170,7 @@ class Cpm4Attention(nn.Module):
     ) -> None:
         super().__init__()
         tp_size = dist.get_world_size()
+        self.hidden_size = hidden_size
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size
@@ -218,6 +220,36 @@ class Cpm4Attention(nn.Module):
         else:
             self.q_norm = None
             self.k_norm = None
+        
+        # LoRA adapters (initialized as None, set via add_lora_adapters)
+        self.qkv_lora: QKVLoRAAdapter | None = None
+        self.o_lora: OutputLoRAAdapter | None = None
+    
+    def add_lora_adapters(self, r: int, alpha: float, dropout: float = 0.0) -> None:
+        """Add LoRA adapters to this attention layer.
+        
+        The trained LoRA weights use separate q_proj, k_proj, v_proj, o_proj naming.
+        This method creates adapters that match that structure while working with
+        our merged QKV projection.
+        """
+        # QKV LoRA adapter - stores separate q/k/v LoRA weights
+        self.qkv_lora = QKVLoRAAdapter(
+            hidden_size=self.hidden_size,
+            q_output_size=self.q_size,
+            kv_output_size=self.kv_size,
+            r=r,
+            alpha=alpha,
+            dropout=dropout,
+        )
+        
+        # Output projection LoRA adapter
+        self.o_lora = OutputLoRAAdapter(
+            input_size=self.num_heads * self.head_dim,
+            output_size=self.hidden_size,
+            r=r,
+            alpha=alpha,
+            dropout=dropout,
+        )
 
     def forward(
         self,
@@ -226,6 +258,13 @@ class Cpm4Attention(nn.Module):
     ) -> torch.Tensor:
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        
+        # Apply QKV LoRA if present
+        if self.qkv_lora is not None:
+            delta_q, delta_k, delta_v = self.qkv_lora(hidden_states)
+            q = q + delta_q
+            k = k + delta_k
+            v = v + delta_v
 
         if self.is_causal:
             # Apply Q/K normalization only if enabled
@@ -272,6 +311,11 @@ class Cpm4Attention(nn.Module):
             o = o.view(B, -1, self.num_heads * self.head_dim)
 
         output = self.o_proj(o)
+        
+        # Apply output LoRA if present
+        if self.o_lora is not None:
+            output = output + self.o_lora(o)
+        
         return output
 
 
@@ -674,11 +718,13 @@ class VoxCPMModel(nn.Module):
         self,
         config: VoxCPMConfig,
         inference_timesteps: int,
+        lora_config: LoRAConfig = None,
     ):
         super().__init__()
         self.config = config
         self.feat_dim = config.feat_dim
         self.patch_size = config.patch_size
+        self.lora_config = lora_config
 
         assert not self.config.lm_config.use_mup, "mup inference is not supported now"
 
@@ -732,6 +778,120 @@ class VoxCPMModel(nn.Module):
         self.stop_proj = nn.Linear(config.lm_config.hidden_size, config.lm_config.hidden_size)
         self.stop_actn = nn.SiLU()
         self.stop_head = nn.Linear(config.lm_config.hidden_size, 2, bias=False)
+        
+        # Apply LoRA if configured
+        if self.lora_config is not None:
+            self._apply_lora()
+    
+    def _apply_lora(self) -> None:
+        """Inject LoRA into LM / DiT / projection layers.
+        
+        For attention layers, we add LoRA adapters that store separate q/k/v/o LoRA
+        weights (matching the trained checkpoint structure) while working with our
+        merged QKVParallelLinear architecture.
+        """
+        cfg = self.lora_config
+        lora_kwargs = dict(r=cfg.r, alpha=cfg.alpha, dropout=cfg.dropout)
+
+        # LM: base_lm + residual_lm - Add LoRA adapters to attention layers
+        if cfg.enable_lm:
+            for lm in [self.base_lm, self.residual_lm]:
+                for module in lm.modules():
+                    if isinstance(module, Cpm4Attention):
+                        module.add_lora_adapters(**lora_kwargs)
+
+        # DiT: feat_decoder.estimator.decoder - Add LoRA adapters to attention layers
+        if cfg.enable_dit:
+            dit_decoder = self.feat_decoder.estimator.decoder
+            for module in dit_decoder.modules():
+                if isinstance(module, Cpm4Attention):
+                    module.add_lora_adapters(**lora_kwargs)
+
+        # Projection layers - These are nn.Linear so wrap with LoRALinear
+        if cfg.enable_proj:
+            for attr_name in cfg.target_proj_modules:
+                module = getattr(self, attr_name, None)
+                if isinstance(module, nn.Linear):
+                    setattr(self, attr_name, LoRALinear(base=module, **lora_kwargs))
+    
+    # ------------------------------------------------------------------ #
+    # LoRA Weight Management
+    # ------------------------------------------------------------------ #
+    
+    # Mapping from trained LoRA weight names to our adapter structure
+    # Trained: base_lm.layers.0.self_attn.q_proj.lora_A
+    # Ours:    base_lm.layers.0.self_attn.qkv_lora.q_proj_lora_A
+    LORA_KEY_MAPPING = {
+        "q_proj.lora_A": "qkv_lora.q_proj_lora_A",
+        "q_proj.lora_B": "qkv_lora.q_proj_lora_B",
+        "k_proj.lora_A": "qkv_lora.k_proj_lora_A",
+        "k_proj.lora_B": "qkv_lora.k_proj_lora_B",
+        "v_proj.lora_A": "qkv_lora.v_proj_lora_A",
+        "v_proj.lora_B": "qkv_lora.v_proj_lora_B",
+        "o_proj.lora_A": "o_lora.lora_A",
+        "o_proj.lora_B": "o_lora.lora_B",
+    }
+    
+    def _iter_lora_modules(self):
+        """Iterate over all LoRA modules."""
+        for module in self.modules():
+            if isinstance(module, (LoRALinear, QKVLoRAAdapter, OutputLoRAAdapter)):
+                yield module
+
+    def load_lora_weights(self, lora_state_dict: dict, device: str = "cuda"):
+        """Load LoRA weights from a trained checkpoint.
+        
+        Maps trained LoRA weight keys (q_proj.lora_A, etc.) to our adapter
+        structure (qkv_lora.q_proj_lora_A, etc.).
+
+        Args:
+            lora_state_dict: State dict containing lora_A and lora_B weights
+            device: Target device
+
+        Returns:
+            tuple: (loaded_keys, skipped_keys)
+        """
+        # Build param mapping
+        model_params = dict(self.named_parameters())
+
+        loaded_keys, skipped_keys = [], []
+        for key, value in lora_state_dict.items():
+            # Try direct key first
+            if key in model_params:
+                model_params[key].data.copy_(value.to(device))
+                loaded_keys.append(key)
+                continue
+            
+            # Try mapping trained keys to our adapter structure
+            mapped_key = None
+            for old_suffix, new_suffix in self.LORA_KEY_MAPPING.items():
+                if key.endswith(old_suffix):
+                    mapped_key = key.replace(old_suffix, new_suffix)
+                    break
+            
+            if mapped_key and mapped_key in model_params:
+                model_params[mapped_key].data.copy_(value.to(device))
+                loaded_keys.append(key)
+            else:
+                skipped_keys.append(key)
+
+        return loaded_keys, skipped_keys
+
+    def set_lora_enabled(self, enabled: bool) -> None:
+        """Enable/disable all LoRA layers."""
+        for module in self._iter_lora_modules():
+            if hasattr(module, 'set_enabled'):
+                module.set_enabled(enabled)
+
+    def reset_lora_weights(self) -> None:
+        """Reset all LoRA weights (A: kaiming, B: zeros), effectively unloading LoRA."""
+        for module in self._iter_lora_modules():
+            if hasattr(module, 'reset_lora_parameters'):
+                module.reset_lora_parameters()
+
+    def get_lora_state_dict(self) -> dict:
+        """Get all LoRA parameters (lora_A/lora_B)."""
+        return {name: param.data.clone() for name, param in self.named_parameters() if "lora_" in name}
     
     def forward(
             self,

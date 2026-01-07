@@ -1,14 +1,25 @@
 from dataclasses import dataclass
 import torch
 from multiprocessing.synchronize import Event
+import json
+import logging
 
 from nanovllm_voxcpm.config import Config
 from nanovllm_voxcpm.engine.model_runner import RunnerTask, BaseModelRunner
 from nanovllm_voxcpm.utils.loader import load_model
 from nanovllm_voxcpm.models.voxcpm.model import VoxCPMModel, VoxCPMConfig
+from nanovllm_voxcpm.models.voxcpm.config import LoRAConfig
 from nanovllm_voxcpm.layers.audio_vae import AudioVAE
 import numpy as np
 import os
+
+try:
+    from safetensors.torch import load_file as safetensors_load_file
+    SAFETENSORS_AVAILABLE = True
+except ImportError:
+    SAFETENSORS_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class VoxCPMPayload:
@@ -31,6 +42,7 @@ class VoxCPMRunner(BaseModelRunner):
         self.inference_timesteps = config.model_config.inference_timesteps
         self.feat_dim = config.model_config.feat_dim
         self.patch_size = config.model_config.patch_size
+        self.lora_path = getattr(config, 'lora_path', None)
         super().__init__(config, rank, device_idx, distributed_port, event)
     
     @property
@@ -38,8 +50,18 @@ class VoxCPMRunner(BaseModelRunner):
         return torch.bfloat16
     
     def init_model(self, model_config : VoxCPMConfig, model_path : str):
-        self.model = VoxCPMModel(model_config, self.inference_timesteps)
+        # Check if LoRA should be applied
+        lora_config = None
+        if self.lora_path is not None:
+            lora_config = self._load_lora_config(self.lora_path)
+            logger.info(f"LoRA config loaded from {self.lora_path}: {lora_config}")
+        
+        self.model = VoxCPMModel(model_config, self.inference_timesteps, lora_config=lora_config)
         load_model(self.model, model_path)
+        
+        # Load LoRA weights if configured
+        if self.lora_path is not None and lora_config is not None:
+            self._load_lora_weights(self.lora_path)
 
         torch.set_default_dtype(torch.float32)
         self.vae = AudioVAE() if model_config.audio_vae_config is None else AudioVAE(**model_config.audio_vae_config.model_dump(mode="dict"))
@@ -47,6 +69,50 @@ class VoxCPMRunner(BaseModelRunner):
         vae_state_dict = torch.load(os.path.join(model_path, "audiovae.pth"))["state_dict"]
         self.vae.load_state_dict(vae_state_dict)
         torch.set_default_dtype(torch.bfloat16)
+    
+    def _load_lora_config(self, lora_path: str) -> LoRAConfig:
+        """Load LoRA config from a directory containing lora_config.json.
+        
+        Per VoxCPM lora-vox documentation, the lora_config.json file has a nested
+        structure with a "lora_config" key containing the actual config values.
+        """
+        config_path = os.path.join(lora_path, "lora_config.json")
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"LoRA config not found at {config_path}")
+        
+        with open(config_path, "r") as f:
+            lora_info = json.load(f)
+        
+        # Handle nested "lora_config" structure per VoxCPM documentation
+        # The file structure is: {"lora_config": {...actual config...}}
+        if "lora_config" in lora_info:
+            config_dict = lora_info["lora_config"]
+        else:
+            # Fallback: treat as flat config for compatibility
+            config_dict = lora_info
+        
+        return LoRAConfig(**config_dict)
+    
+    def _load_lora_weights(self, lora_path: str):
+        """Load LoRA weights from a directory."""
+        safetensors_path = os.path.join(lora_path, "lora_weights.safetensors")
+        bin_path = os.path.join(lora_path, "lora_weights.bin")
+        
+        if os.path.exists(safetensors_path) and SAFETENSORS_AVAILABLE:
+            logger.info(f"Loading LoRA weights from safetensors: {safetensors_path}")
+            lora_state_dict = safetensors_load_file(safetensors_path, device="cpu")
+        elif os.path.exists(bin_path):
+            logger.info(f"Loading LoRA weights from bin: {bin_path}")
+            lora_state_dict = torch.load(bin_path, map_location="cpu", weights_only=True)
+        else:
+            raise FileNotFoundError(
+                f"LoRA weights not found. Expected either {safetensors_path} or {bin_path}"
+            )
+        
+        loaded_keys, skipped_keys = self.model.load_lora_weights(lora_state_dict, device="cuda")
+        logger.info(f"Loaded {len(loaded_keys)} LoRA parameters, skipped {len(skipped_keys)}")
+        if skipped_keys:
+            logger.warning(f"Skipped LoRA keys: {skipped_keys[:10]}...")
     
     def make_dummy_inputs(self, batch_size: int, length: int) -> torch.Tensor:
         return {

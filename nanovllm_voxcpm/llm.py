@@ -1,7 +1,7 @@
 import os
 import json
 from huggingface_hub import snapshot_download
-from typing import List
+from typing import List, Optional
 import asyncio
 import torch
 
@@ -28,8 +28,27 @@ class VoxCPM:
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
         devices : List[int] = [],
+        lora_path: Optional[str] = None,
         **kwargs,
     ):
+        """Load VoxCPM model from pretrained weights.
+        
+        Args:
+            model: HuggingFace model ID or local path to the base model
+            inference_timesteps: Number of diffusion timesteps for inference
+            max_num_batched_tokens: Maximum number of tokens in a batch
+            max_num_seqs: Maximum number of concurrent sequences
+            max_model_len: Maximum model context length
+            gpu_memory_utilization: GPU memory utilization target
+            enforce_eager: Disable CUDA graph optimization
+            devices: List of GPU device indices to use
+            lora_path: Path to LoRA weights directory containing lora_config.json 
+                       and lora_weights.safetensors (or lora_weights.bin)
+            **kwargs: Additional arguments
+        
+        Returns:
+            VoxCPM server instance (async or sync depending on context)
+        """
         if "~" in model:
             model_path = os.path.expanduser(model)
             if not os.path.isdir(model_path):
@@ -39,6 +58,17 @@ class VoxCPM:
                 model_path = snapshot_download(repo_id=model)
             else:
                 model_path = model
+        
+        # Resolve lora_path if provided
+        resolved_lora_path = None
+        if lora_path is not None:
+            if "~" in lora_path:
+                resolved_lora_path = os.path.expanduser(lora_path)
+            else:
+                resolved_lora_path = lora_path
+            
+            if not os.path.isdir(resolved_lora_path):
+                raise ValueError(f"LoRA path {resolved_lora_path} does not exist")
         
         config_file = os.path.expanduser(os.path.join(model_path, "config.json"))
         
@@ -73,6 +103,7 @@ class VoxCPM:
                     gpu_memory_utilization=gpu_memory_utilization,
                     enforce_eager=enforce_eager,
                     devices=devices,
+                    lora_path=resolved_lora_path,
                     **kwargs,
                 )
             else:
@@ -85,6 +116,7 @@ class VoxCPM:
                     gpu_memory_utilization=gpu_memory_utilization,
                     enforce_eager=enforce_eager,
                     devices=devices,
+                    lora_path=resolved_lora_path,
                     **kwargs,
                 )
         else:

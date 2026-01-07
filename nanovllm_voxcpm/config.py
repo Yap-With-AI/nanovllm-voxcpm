@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 from pydantic import BaseModel
-from typing import Generic, TypeVar, List
+from typing import Generic, TypeVar, List, Optional
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -19,9 +19,14 @@ class Config(Generic[T]):
 
     model_config: T | None = None
     devices : List[int] | None = None
+    
+    # LoRA configuration
+    lora_path: Optional[str] = None
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
         assert self.max_num_batched_tokens >= self.max_model_len
+        if self.lora_path is not None:
+            assert os.path.isdir(self.lora_path), f"LoRA path {self.lora_path} does not exist"

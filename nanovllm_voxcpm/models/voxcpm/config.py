@@ -62,6 +62,24 @@ class AudioVAEConfig(BaseModel):
     use_noise_block: bool = False
 
 
+class LoRAConfig(BaseModel):
+    """Configuration for LoRA fine-tuning."""
+
+    enable_lm: bool = False  # Apply LoRA to base_lm + residual_lm
+    enable_dit: bool = False  # Apply LoRA to VoxCPMLocDiT
+    enable_proj: bool = False  # Apply LoRA to projection Linear layers
+
+    r: int = 32
+    alpha: int = 16
+    dropout: float = 0.0
+
+    # Target linear layer names for LM & DiT (matched by attribute name)
+    target_modules_lm: List[str] = ["q_proj", "v_proj", "k_proj", "o_proj"]
+    target_modules_dit: List[str] = ["q_proj", "v_proj", "k_proj", "o_proj"]
+    # Projection layer attribute names to find on VoxCPMModel
+    target_proj_modules: List[str] = ["enc_to_lm_proj", "lm_to_dit_proj", "res_to_dit_proj"]
+
+
 class VoxCPMConfig(BaseModel):
     lm_config: MiniCPM4Config
     patch_size: int = 2
@@ -78,3 +96,6 @@ class VoxCPMConfig(BaseModel):
     dtype: str = "bfloat16"
 
     inference_timesteps: int = 12
+    
+    # LoRA configuration (optional)
+    lora_config: Optional[LoRAConfig] = None

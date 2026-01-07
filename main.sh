@@ -17,6 +17,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # ============================================
+# Step 0.1: Check for HF_TOKEN (required for private LoRA model)
+# ============================================
+echo -e "\n${YELLOW}[0.1/8] Checking HuggingFace token...${NC}"
+
+if [ -z "$HF_TOKEN" ]; then
+    echo -e "${RED}ERROR: HF_TOKEN environment variable is not set.${NC}"
+    echo -e "${RED}The LoRA model is private and requires authentication.${NC}"
+    echo -e "${YELLOW}Please export your HuggingFace token:${NC}"
+    echo -e "  export HF_TOKEN=your_huggingface_token"
+    echo -e ""
+    echo -e "You can get your token from: https://huggingface.co/settings/tokens"
+    exit 1
+fi
+
+echo -e "${GREEN}✓ HF_TOKEN is set${NC}"
+
+# Export for huggingface_hub to use
+export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+export HF_TOKEN="$HF_TOKEN"
+
+# ============================================
 # Step 0: Cleanup - kill existing processes
 # ============================================
 echo -e "\n${YELLOW}[0/8] Cleaning up existing processes...${NC}"
@@ -126,18 +147,65 @@ echo -e "${GREEN}✓ CUDA verified${NC}"
 # ============================================
 # Step 5: Download model from HuggingFace
 # ============================================
-echo -e "\n${YELLOW}[5/8] Downloading model from HuggingFace...${NC}"
+echo -e "\n${YELLOW}[5/8] Downloading models from HuggingFace...${NC}"
 
+# Download base VoxCPM model (public)
 python3 -c "
 from huggingface_hub import snapshot_download
 import os
 
 model_id = 'openbmb/VoxCPM1.5'
-print(f'Downloading {model_id}...')
+print(f'Downloading base model: {model_id}...')
 path = snapshot_download(repo_id=model_id)
-print(f'Model downloaded to: {path}')
+print(f'Base model downloaded to: {path}')
 "
-echo -e "${GREEN}✓ Model downloaded${NC}"
+echo -e "${GREEN}✓ Base model downloaded${NC}"
+
+# Download LoRA model (private, requires HF_TOKEN)
+echo "Downloading LoRA fine-tuned model (private repo)..."
+python3 -c "
+from huggingface_hub import snapshot_download
+import os
+
+lora_repo = 'yapwithai/vox-1.5-orpheus-distil'
+print(f'Downloading LoRA model: {lora_repo}...')
+print('(This is a private repo - using HF_TOKEN for authentication)')
+
+path = snapshot_download(
+    repo_id=lora_repo,
+    token=os.environ.get('HF_TOKEN'),
+)
+print(f'LoRA model downloaded to: {path}')
+
+# Verify the female voice LoRA exists
+lora_female_path = os.path.join(path, 'lora', 'female')
+if os.path.isdir(lora_female_path):
+    print(f'Female voice LoRA found at: {lora_female_path}')
+    
+    # Verify required files exist
+    config_file = os.path.join(lora_female_path, 'lora_config.json')
+    weights_file = os.path.join(lora_female_path, 'lora_weights.safetensors')
+    
+    if os.path.exists(config_file):
+        print(f'  ✓ lora_config.json')
+    else:
+        print(f'  ✗ lora_config.json not found!')
+        exit(1)
+    
+    if os.path.exists(weights_file):
+        print(f'  ✓ lora_weights.safetensors')
+    else:
+        weights_file_alt = os.path.join(lora_female_path, 'lora_weights.bin')
+        if os.path.exists(weights_file_alt):
+            print(f'  ✓ lora_weights.bin')
+        else:
+            print(f'  ✗ LoRA weights not found!')
+            exit(1)
+else:
+    print(f'ERROR: Female voice LoRA not found at {lora_female_path}')
+    exit(1)
+"
+echo -e "${GREEN}✓ LoRA model downloaded${NC}"
 
 # ============================================
 # Step 6: Start FastAPI server

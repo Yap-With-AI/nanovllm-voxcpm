@@ -25,6 +25,7 @@ class VoxCPMServerImpl:
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
         devices : List[int] = [],
+        lora_path : str | None = None,
     ):
         model_config = VoxCPMConfig.model_validate_json(
             open(os.path.join(model_path, "config.json")).read()
@@ -41,6 +42,7 @@ class VoxCPMServerImpl:
             enforce_eager=enforce_eager,
             model_config=model_config,
             devices=devices,
+            lora_path=lora_path,
         )
 
         self.llm = VoxCPMEngine(engine_config)
@@ -110,6 +112,8 @@ def main_loop(
     args, kwargs
 ):
     import signal
+    import logging
+    logging.basicConfig(level=logging.INFO)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     srv = VoxCPMServerImpl(*args, **kwargs)
 
@@ -192,6 +196,7 @@ class AsyncVoxCPMServer:
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
         devices : List[int] = [],
+        lora_path : str | None = None,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -202,7 +207,7 @@ class AsyncVoxCPMServer:
         self.queue_out = ctx.Queue()
         self.process = ctx.Process(
             target=main_loop, 
-            args=(self.queue_in, self.queue_out, (model_path, inference_timesteps, max_num_batched_tokens, max_num_seqs, max_model_len, gpu_memory_utilization, enforce_eager, devices), {}),
+            args=(self.queue_in, self.queue_out, (model_path, inference_timesteps, max_num_batched_tokens, max_num_seqs, max_model_len, gpu_memory_utilization, enforce_eager, devices, lora_path), {}),
             daemon=True,
         )
         self.process.start()
@@ -302,6 +307,7 @@ class AsyncVoxCPMServerPool:
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
         devices : List[int] = [],
+        lora_path : str | None = None,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -317,6 +323,7 @@ class AsyncVoxCPMServerPool:
                 gpu_memory_utilization=gpu_memory_utilization,
                 enforce_eager=enforce_eager,
                 devices=[device_idx],
+                lora_path=lora_path,
             )
             for device_idx in devices
         ]
@@ -391,6 +398,7 @@ class SyncVoxCPMServerPool:
             gpu_memory_utilization: float = 0.9,
             enforce_eager: bool = False,
             devices : List[int] = [],
+            lora_path : str | None = None,
             **kwargs,
         ):
         async def init_async_server_pool():
@@ -403,6 +411,7 @@ class SyncVoxCPMServerPool:
                 gpu_memory_utilization=gpu_memory_utilization,
                 enforce_eager=enforce_eager,
                 devices=devices,
+                lora_path=lora_path,
                 **kwargs,
             )
 
