@@ -32,6 +32,9 @@ class Config(Generic[T]):
     compile_fullgraph: bool = False
     # Dynamic shapes - set to True for variable batch/seq lengths
     compile_dynamic: bool = True
+    
+    # Async VAE: run VAE decode on separate CUDA stream to overlap with CPU operations
+    async_vae: bool = True
 
     def __post_init__(self):
         assert os.path.isdir(self.model)

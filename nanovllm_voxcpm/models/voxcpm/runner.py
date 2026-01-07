@@ -109,11 +109,22 @@ class VoxCPMRunner(BaseModelRunner):
         self.compile_fullgraph = getattr(config, 'compile_fullgraph', False)
         self.compile_dynamic = getattr(config, 'compile_dynamic', True)
         
+        # Async VAE configuration - overlaps VAE decode with other operations
+        self.async_vae = getattr(config, 'async_vae', True)
+        self._vae_stream = None  # Lazy init after CUDA context is ready
+        
         super().__init__(config, rank, device_idx, distributed_port, event)
     
     @property
     def dtype(self) -> torch.dtype:
         return torch.bfloat16
+    
+    @property
+    def vae_stream(self) -> torch.cuda.Stream:
+        """Lazy init VAE stream after CUDA context is ready."""
+        if self._vae_stream is None:
+            self._vae_stream = torch.cuda.Stream()
+        return self._vae_stream
     
     def init_model(self, model_config : VoxCPMConfig, model_path : str):
         # Check if LoRA should be applied
@@ -271,8 +282,26 @@ class VoxCPMRunner(BaseModelRunner):
                 vae_decoder_inputs[i, :pad_len] = torch.from_numpy(seqs[i].custom_payload.padding_decode).cuda(non_blocking=True)
             vae_decoder_inputs[i, pad_len:pad_len+self.patch_size] = latents[i].to(torch.float32)
         
-        vae_decoder_outputs = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :].cpu().numpy()
-        stop_flag = outputs["stop_flag"].cpu().tolist()
+        if self.async_vae:
+            # Async VAE: run VAE decode on separate stream, overlap with CPU operations
+            # This allows VAE GPU compute to run while we transfer other data to CPU
+            vae_event = torch.cuda.Event()
+            with torch.cuda.stream(self.vae_stream):
+                vae_decoder_outputs_gpu = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :]
+                vae_event.record()
+            
+            # While VAE runs on GPU, do CPU transfers that don't depend on VAE output
+            stop_flag = outputs["stop_flag"].cpu().tolist()
+            np_latents = latents.to(torch.float32).cpu().numpy()
+            
+            # Now sync VAE and transfer results to CPU
+            vae_event.synchronize()
+            vae_decoder_outputs = vae_decoder_outputs_gpu.cpu().numpy()
+        else:
+            # Synchronous VAE decode (original behavior)
+            vae_decoder_outputs = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :].cpu().numpy()
+            stop_flag = outputs["stop_flag"].cpu().tolist()
+            np_latents = latents.to(torch.float32).cpu().numpy()
 
         ret_waveforms = []
         for i in range(len(seqs)):
@@ -286,7 +315,6 @@ class VoxCPMRunner(BaseModelRunner):
             )
 
         ret = []
-        np_latents = latents.to(torch.float32).cpu().numpy()
         for i in range(len(seqs)):
             ret.append({
                 "latents": np_latents[i],
