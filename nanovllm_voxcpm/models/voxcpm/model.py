@@ -621,9 +621,9 @@ class UnifiedCFM(torch.nn.Module):
         """
         t, _, dt = t_span[0], t_span[-1], t_span[0] - t_span[1]
 
-        # Skip CFG for first 25% of steps - early steps establish coarse structure,
-        # CFG matters more for fine details in later steps. Saves ~18% estimator calls.
-        zero_init_steps = max(1, int(len(t_span) * 0.25))
+        # Skip CFG for first 4% of steps - minimal skip to preserve audio quality
+        # while still avoiding the very first step's CFG overhead.
+        zero_init_steps = max(1, int(len(t_span) * 0.04))
         for step in range(1, len(t_span)):
             if step <= zero_init_steps:
                 dphi_dt = torch.zeros_like(x)
