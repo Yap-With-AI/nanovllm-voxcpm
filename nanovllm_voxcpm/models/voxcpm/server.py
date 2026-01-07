@@ -36,7 +36,7 @@ class VoxCPMServerImpl:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill for reduced TTFB
-        prefill_chunk_size: int = 128,
+        prefill_chunk_size: int = 64,
     ):
         model_config = VoxCPMConfig.model_validate_json(
             open(os.path.join(model_path, "config.json")).read()
@@ -249,7 +249,7 @@ class AsyncVoxCPMServer:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill
-        prefill_chunk_size: int = 128,
+        prefill_chunk_size: int = 64,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -398,7 +398,7 @@ class AsyncVoxCPMServerPool:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill
-        prefill_chunk_size: int = 128,
+        prefill_chunk_size: int = 64,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -515,7 +515,7 @@ class SyncVoxCPMServerPool:
             compile_fullgraph: bool = False,
             compile_dynamic: bool = True,
             # Chunked prefill
-            prefill_chunk_size: int = 128,
+            prefill_chunk_size: int = 64,
             **kwargs,
         ):
         async def init_async_server_pool():
