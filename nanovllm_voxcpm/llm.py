@@ -11,7 +11,10 @@ torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("high")
 
 # Enable cuDNN autotuning for optimal conv kernel selection (benefits VAE)
-torch.backends.cudnn.benchmark = True
+# Disable cuDNN autotuning for consistent TTFB
+# benchmark=True causes variance as cuDNN re-benchmarks algorithms between runs
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
 
 try:
     # check if flash-attn is installed
