@@ -41,6 +41,8 @@ class VoxCPM:
         compile_targets: Optional[List[str]] = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
+        # Chunked prefill for reduced TTFB under concurrency
+        prefill_chunk_size: int = 256,
         **kwargs,
     ):
         """Load VoxCPM model from pretrained weights.
@@ -66,6 +68,8 @@ class VoxCPM:
                             ["residual_lm"], or ["all"]. Default: ["estimator"] (the DiT model)
             compile_fullgraph: Use fullgraph=True for maximum optimization (may fail on dynamic control flow)
             compile_dynamic: Use dynamic shapes (recommended for variable batch sizes). Default: True
+            prefill_chunk_size: Tokens per prefill chunk. Smaller = lower TTFB, slightly lower throughput.
+                               Set to 0 to disable chunking. Default: 256
             **kwargs: Additional arguments
         
         Returns:
@@ -150,6 +154,7 @@ class VoxCPM:
                     lora_path=resolved_lora_path,
                     lora_paths=resolved_lora_paths,
                     default_voice=default_voice,
+                    prefill_chunk_size=prefill_chunk_size,
                     **compile_opts,
                     **kwargs,
                 )
@@ -166,6 +171,7 @@ class VoxCPM:
                     lora_path=resolved_lora_path,
                     lora_paths=resolved_lora_paths,
                     default_voice=default_voice,
+                    prefill_chunk_size=prefill_chunk_size,
                     **compile_opts,
                     **kwargs,
                 )

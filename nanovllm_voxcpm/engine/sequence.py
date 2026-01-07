@@ -6,6 +6,7 @@ from typing import Generic, TypeVar
 
 class SequenceStatus(Enum):
     WAITING = auto()
+    PREFILLING = auto()  # Partial prefill done, needs more chunks
     RUNNING = auto()
     FINISHED = auto()
 

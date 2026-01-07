@@ -35,6 +35,8 @@ class VoxCPMServerImpl:
         compile_targets: List[str] | None = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
+        # Chunked prefill for reduced TTFB
+        prefill_chunk_size: int = 256,
     ):
         model_config = VoxCPMConfig.model_validate_json(
             open(os.path.join(model_path, "config.json")).read()
@@ -61,6 +63,8 @@ class VoxCPMServerImpl:
             compile_targets=compile_targets if compile_targets is not None else ["estimator"],
             compile_fullgraph=compile_fullgraph,
             compile_dynamic=compile_dynamic,
+            # Chunked prefill
+            prefill_chunk_size=prefill_chunk_size,
         )
 
         self.llm = VoxCPMEngine(engine_config)
@@ -244,6 +248,8 @@ class AsyncVoxCPMServer:
         compile_targets: List[str] | None = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
+        # Chunked prefill
+        prefill_chunk_size: int = 256,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -266,6 +272,7 @@ class AsyncVoxCPMServer:
                     "compile_targets": compile_targets,
                     "compile_fullgraph": compile_fullgraph,
                     "compile_dynamic": compile_dynamic,
+                    "prefill_chunk_size": prefill_chunk_size,
                 }
             ),
             daemon=True,
@@ -390,6 +397,8 @@ class AsyncVoxCPMServerPool:
         compile_targets: List[str] | None = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
+        # Chunked prefill
+        prefill_chunk_size: int = 256,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -413,6 +422,7 @@ class AsyncVoxCPMServerPool:
                 compile_targets=compile_targets,
                 compile_fullgraph=compile_fullgraph,
                 compile_dynamic=compile_dynamic,
+                prefill_chunk_size=prefill_chunk_size,
             )
             for device_idx in devices
         ]
@@ -504,6 +514,8 @@ class SyncVoxCPMServerPool:
             compile_targets: List[str] | None = None,
             compile_fullgraph: bool = False,
             compile_dynamic: bool = True,
+            # Chunked prefill
+            prefill_chunk_size: int = 256,
             **kwargs,
         ):
         async def init_async_server_pool():
@@ -524,6 +536,7 @@ class SyncVoxCPMServerPool:
                 compile_targets=compile_targets,
                 compile_fullgraph=compile_fullgraph,
                 compile_dynamic=compile_dynamic,
+                prefill_chunk_size=prefill_chunk_size,
                 **kwargs,
             )
 

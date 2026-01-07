@@ -20,7 +20,7 @@ class LLMEngineBase:
     scheduler : Scheduler
     
     def __init__(self, RunnerType : type[BaseModelRunner], config: Config, tensor_parallel_size: int):
-        
+        self.prefill_chunk_size = getattr(config, 'prefill_chunk_size', 256)
         self.distributed_port = get_distributed_port()
 
         if config.devices is None or len(config.devices) == 0:
@@ -59,15 +59,34 @@ class LLMEngineBase:
 
     def step(self):
         seqs, is_prefill = self.scheduler.schedule()
+        if not seqs:
+            return []
+        
         runner_tasks = [self.preprocess_seq(seq, is_prefill) for seq in seqs]
         outputs = self.model_runner.call("run", runner_tasks, is_prefill)
         
-        for seq, output in zip(seqs, outputs):
-            self.postprocess_seq(seq, output, is_prefill)
-        
-        for seq in seqs:
-            if seq.stoped:
-                self.scheduler.finish(seq)
+        if is_prefill:
+            # Prefill chunk completed - update scheduler state
+            for seq, task in zip(seqs, runner_tasks):
+                # Calculate tokens processed in this chunk
+                tokens_processed = task.seq_length - task.num_cached_tokens
+                self.scheduler.after_prefill_chunk(seq, tokens_processed)
+                
+                # Call postprocess for prefill (may be no-op for most models)
+                # Only pass output if this was the FINAL prefill chunk
+                if seq.num_cached_tokens >= len(seq):
+                    # Find the output for this sequence
+                    idx = seqs.index(seq)
+                    self.postprocess_seq(seq, outputs[idx], is_prefill)
+        else:
+            # Decode step - process outputs normally
+            for seq, output in zip(seqs, outputs):
+                self.postprocess_seq(seq, output, is_prefill)
+            
+            # Check for finished sequences
+            for seq in seqs:
+                if seq.stoped:
+                    self.scheduler.finish(seq)
 
         return seqs
 

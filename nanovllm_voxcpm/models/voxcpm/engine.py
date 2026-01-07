@@ -37,30 +37,47 @@ class VoxCPMEngine(LLMEngineBase):
 
         self.tokenizer = mask_multichar_chinese_tokens(LlamaTokenizerFast.from_pretrained(config.model))
 
-
         super().__init__(VoxCPMRunner, config, config.tensor_parallel_size)
     
     def preprocess_seq(self, seq: Sequence[VoxCPMSeqPayload], is_prefill: bool) -> RunnerTask[VoxCPMPayload]:
         if is_prefill:
+            # Concatenate features if needed
             if len(seq.custom_payload.feats) > 1:
                 feats = np.concatenate(seq.custom_payload.feats, axis=0)
                 seq.custom_payload.feats = [feats]
 
+            # Calculate chunk boundaries
+            start_idx = seq.num_cached_tokens
+            remaining_tokens = len(seq) - start_idx
+            
+            # Apply chunk size limit
+            if self.prefill_chunk_size > 0:
+                chunk_tokens = min(remaining_tokens, self.prefill_chunk_size)
+            else:
+                chunk_tokens = remaining_tokens
+            
+            end_idx = start_idx + chunk_tokens
+            
+            # Check if this is the FINAL prefill chunk
+            is_final_chunk = (end_idx >= len(seq))
+
             return RunnerTask(
                 seq.block_table,
-                len(seq),
-                seq.num_cached_tokens,
+                end_idx,  # seq_length = up to end of this chunk
+                start_idx,  # num_cached_tokens = start of this chunk
                 seq.block_size,
                 VoxCPMPayload(
-                    text_tokens=np.array(seq.custom_payload.text_tokens[seq.num_cached_tokens:], dtype=np.int64),
-                    feats=seq.custom_payload.feats[-1][seq.num_cached_tokens:],
-                    feat_masks=np.array(seq.custom_payload.feat_masks[seq.num_cached_tokens:], dtype=np.bool_),
+                    text_tokens=np.array(seq.custom_payload.text_tokens[start_idx:end_idx], dtype=np.int64),
+                    feats=seq.custom_payload.feats[-1][start_idx:end_idx],
+                    feat_masks=np.array(seq.custom_payload.feat_masks[start_idx:end_idx], dtype=np.bool_),
                     temperature=seq.custom_payload.temperature,
                     cfg_value=seq.custom_payload.cfg_value,
-                    padding_decode=seq.custom_payload.decode_pad,
+                    # Only include decode_pad on final prefill chunk
+                    padding_decode=seq.custom_payload.decode_pad if is_final_chunk else None,
                 )
             )
         else:
+            # Decode step - unchanged
             return RunnerTask(
                 seq.block_table,
                 len(seq),
@@ -78,6 +95,12 @@ class VoxCPMEngine(LLMEngineBase):
 
 
     def postprocess_seq(self, seq: Sequence[VoxCPMSeqPayload], outputs: dict, is_prefill: bool):
+        """
+        Process outputs after a step.
+        
+        For prefill: Only called on the FINAL chunk, produces first audio token.
+        For decode: Called every step, produces subsequent audio tokens.
+        """
         stop_flag = outputs["stop_flag"]
         latents = outputs["latents"]
         waveforms = outputs["waveforms"]
