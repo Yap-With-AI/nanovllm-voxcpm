@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
         # torch.compile for DiT estimator: 10-20% TTFB improvement
         # The estimator runs inference_timesteps (12) times per token - highest ROI target
         use_torch_compile=True,
-        compile_mode="reduce-overhead",  # Best for latency (uses CUDA graphs internally)
+        compile_mode="max-autotune-no-cudagraphs",  # Avoids conflict with nanovllm's CUDA graph capture
         compile_targets=["estimator"],   # Only compile the DiT, not the full model
     )
     await global_instances["server"].wait_for_ready()
