@@ -52,8 +52,8 @@ async def lifespan(app: FastAPI):
     
     global_instances["server"] = VoxCPM.from_pretrained(
         model=model_path,
-        max_num_batched_tokens=24576,  # Supports full 48-way batching at 512 max len
-        max_num_seqs=48,               # Limit concurrent sequences
+        max_num_batched_tokens=8192,   # Smaller batches for lower TTFB
+        max_num_seqs=16,               # Smaller batches = faster individual TTFB
         max_model_len=512,             # 60 input + 375 audio (15s) + buffer
         gpu_memory_utilization=0.92,   # Slightly higher GPU use for batching
         enforce_eager=False,
