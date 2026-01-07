@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
         # The estimator runs inference_timesteps (12) times per token - highest ROI target
         use_torch_compile=True,
         compile_mode="max-autotune-no-cudagraphs",  # Avoids conflict with nanovllm's CUDA graph capture
-        compile_targets=["estimator", "lm", "residual_lm", "encoder"],  # Compile all major compute paths
+        compile_targets=["estimator"],   # Only compile the DiT, not the full model
     )
     await global_instances["server"].wait_for_ready()
     
