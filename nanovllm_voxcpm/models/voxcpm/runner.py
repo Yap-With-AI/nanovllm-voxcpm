@@ -97,10 +97,14 @@ class VoxCPMPayload:
 
 
 class VoxCPMRunner(BaseModelRunner):
+    # Max padding frames for VAE decode (from engine.py n_decode_pad_frames)
+    N_DECODE_PAD_FRAMES = 4
+    
     def __init__(self, config: Config[VoxCPMConfig], rank: int, device_idx : int, distributed_port: int, event: Event | list[Event]):
         self.inference_timesteps = config.model_config.inference_timesteps
         self.feat_dim = config.model_config.feat_dim
         self.patch_size = config.model_config.patch_size
+        self.max_num_seqs = config.max_num_seqs  # For buffer pre-allocation
         self.lora_path = getattr(config, 'lora_path', None)
         
         # Multi-LoRA paths for hotswapping (e.g., {"female": "/path/to/female", "male": "/path/to/male"})
@@ -121,6 +125,9 @@ class VoxCPMRunner(BaseModelRunner):
         # Multi-LoRA state storage for instant hotswapping
         self._lora_states: dict[str, dict] = {}
         self._current_voice: str | None = None
+        
+        # Pre-allocated buffer for VAE decode (initialized in init_model after CUDA ready)
+        self._vae_input_buffer: torch.Tensor | None = None
         
         super().__init__(config, rank, device_idx, distributed_port, event)
     
@@ -178,9 +185,18 @@ class VoxCPMRunner(BaseModelRunner):
         # Fuse weight_norm for inference (removes runtime overhead)
         self._fuse_vae_weight_norm()
         
-        # Compile VAE decoder for faster inference
-        logger.info("Compiling VAE decoder with torch.compile (reduce-overhead)")
+        # Compile VAE encoder and decoder for faster inference
+        logger.info("Compiling VAE encoder + decoder with torch.compile (reduce-overhead)")
+        self.vae.encoder = torch.compile(self.vae.encoder, mode="reduce-overhead", fullgraph=False)
         self.vae.decoder = torch.compile(self.vae.decoder, mode="reduce-overhead", fullgraph=False)
+        
+        # Pre-allocate VAE input buffer (avoids per-step allocation)
+        max_vae_seq_len = self.N_DECODE_PAD_FRAMES + self.patch_size
+        self._vae_input_buffer = torch.empty(
+            self.max_num_seqs, max_vae_seq_len, self.feat_dim,
+            dtype=torch.float32, device="cuda"
+        )
+        logger.info(f"Pre-allocated VAE input buffer: {self._vae_input_buffer.shape}")
         
         torch.set_default_dtype(torch.bfloat16)
         
@@ -352,13 +368,14 @@ class VoxCPMRunner(BaseModelRunner):
         }
 
     def make_dummy_outputs(self, batch_size: int) -> torch.Tensor:
-        latents = torch.zeros(
+        # Use empty instead of zeros - values are always overwritten
+        latents = torch.empty(
             batch_size,
             self.patch_size,
             self.feat_dim,
             dtype=self.dtype,
         )
-        stop_flag = torch.zeros(
+        stop_flag = torch.empty(
             batch_size,
             dtype=torch.int64,
         )
@@ -413,9 +430,12 @@ class VoxCPMRunner(BaseModelRunner):
             else:
                 pad_lengths.append(0)
         max_pad_decode = max(pad_lengths) + self.patch_size
+        batch_size = len(seqs)
 
-        vae_decoder_inputs = torch.zeros(len(seqs), max_pad_decode, self.feat_dim, dtype=torch.float32, device="cuda")
-        for i in range(len(seqs)):
+        # Use pre-allocated buffer (slice to actual size needed)
+        vae_decoder_inputs = self._vae_input_buffer[:batch_size, :max_pad_decode]
+        vae_decoder_inputs.zero_()  # Clear previous data
+        for i in range(batch_size):
             pad_len = pad_lengths[i]
             if pad_len > 0:
                 vae_decoder_inputs[i, :pad_len] = torch.from_numpy(seqs[i].custom_payload.padding_decode).cuda(non_blocking=True)
