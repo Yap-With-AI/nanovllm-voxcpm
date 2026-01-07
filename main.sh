@@ -147,35 +147,41 @@ echo -e "${GREEN}✓ CUDA verified${NC}"
 # ============================================
 # Step 5: Download model from HuggingFace
 # ============================================
-echo -e "\n${YELLOW}[5/8] Downloading models from HuggingFace...${NC}"
+echo -e "\n${YELLOW}[5/8] Downloading model from HuggingFace...${NC}"
 
-# Download base VoxCPM model (public)
+# Download the model repo (private, requires HF_TOKEN)
+# This repo contains:
+#   - Base model (model.safetensors, tokenizer files) at root
+#   - LoRA weights under lora/female/ and lora/male/
 python3 -c "
 from huggingface_hub import snapshot_download
 import os
 
-model_id = 'openbmb/VoxCPM1.5'
-print(f'Downloading base model: {model_id}...')
-path = snapshot_download(repo_id=model_id)
-print(f'Base model downloaded to: {path}')
-"
-echo -e "${GREEN}✓ Base model downloaded${NC}"
-
-# Download LoRA model (private, requires HF_TOKEN)
-echo "Downloading LoRA fine-tuned model (private repo)..."
-python3 -c "
-from huggingface_hub import snapshot_download
-import os
-
-lora_repo = 'yapwithai/vox-1.5-orpheus-distil'
-print(f'Downloading LoRA model: {lora_repo}...')
+model_repo = 'yapwithai/vox-1.5-orpheus-distil'
+print(f'Downloading model: {model_repo}...')
 print('(This is a private repo - using HF_TOKEN for authentication)')
 
 path = snapshot_download(
-    repo_id=lora_repo,
+    repo_id=model_repo,
     token=os.environ.get('HF_TOKEN'),
 )
-print(f'LoRA model downloaded to: {path}')
+print(f'Model downloaded to: {path}')
+
+# Verify base model files exist
+model_file = os.path.join(path, 'model.safetensors')
+config_file = os.path.join(path, 'config.json')
+
+if os.path.exists(model_file):
+    print(f'  ✓ model.safetensors')
+else:
+    print(f'  ✗ model.safetensors not found!')
+    exit(1)
+
+if os.path.exists(config_file):
+    print(f'  ✓ config.json')
+else:
+    print(f'  ✗ config.json not found!')
+    exit(1)
 
 # Verify the female voice LoRA exists
 lora_female_path = os.path.join(path, 'lora', 'female')
@@ -183,20 +189,20 @@ if os.path.isdir(lora_female_path):
     print(f'Female voice LoRA found at: {lora_female_path}')
     
     # Verify required files exist
-    config_file = os.path.join(lora_female_path, 'lora_config.json')
-    weights_file = os.path.join(lora_female_path, 'lora_weights.safetensors')
+    lora_config_file = os.path.join(lora_female_path, 'lora_config.json')
+    lora_weights_file = os.path.join(lora_female_path, 'lora_weights.safetensors')
     
-    if os.path.exists(config_file):
+    if os.path.exists(lora_config_file):
         print(f'  ✓ lora_config.json')
     else:
         print(f'  ✗ lora_config.json not found!')
         exit(1)
     
-    if os.path.exists(weights_file):
+    if os.path.exists(lora_weights_file):
         print(f'  ✓ lora_weights.safetensors')
     else:
-        weights_file_alt = os.path.join(lora_female_path, 'lora_weights.bin')
-        if os.path.exists(weights_file_alt):
+        lora_weights_file_alt = os.path.join(lora_female_path, 'lora_weights.bin')
+        if os.path.exists(lora_weights_file_alt):
             print(f'  ✓ lora_weights.bin')
         else:
             print(f'  ✗ LoRA weights not found!')
@@ -204,8 +210,10 @@ if os.path.isdir(lora_female_path):
 else:
     print(f'ERROR: Female voice LoRA not found at {lora_female_path}')
     exit(1)
+
+print('All required files verified!')
 "
-echo -e "${GREEN}✓ LoRA model downloaded${NC}"
+echo -e "${GREEN}✓ Model downloaded${NC}"
 
 # ============================================
 # Step 6: Start FastAPI server

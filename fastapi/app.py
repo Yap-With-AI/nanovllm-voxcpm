@@ -8,51 +8,50 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-# Base model and LoRA configuration
-BASE_MODEL = "openbmb/VoxCPM1.5"
-LORA_REPO = "yapwithai/vox-1.5-orpheus-distil"
+# Model repo contains base model + LoRA weights
+# Structure:
+#   - model.safetensors, tokenizer files at root (base model)
+#   - lora/female/ (female voice LoRA)
+#   - lora/male/ (male voice LoRA)
+MODEL_REPO = "yapwithai/vox-1.5-orpheus-distil"
 LORA_VOICE = "female"  # Use female voice by default
 
 global_instances = {}
 
 
-def get_lora_path() -> str | None:
-    """Get the path to the LoRA weights for the selected voice.
+def get_model_paths() -> tuple[str, str]:
+    """Get paths to the model and LoRA weights.
     
-    Returns the path to the LoRA directory if it exists, None otherwise.
+    Returns:
+        Tuple of (model_path, lora_path)
     """
-    # Check if LORA_PATH environment variable is set (allows override)
-    lora_path_env = os.environ.get("LORA_PATH")
-    if lora_path_env:
-        return lora_path_env
-    
-    # Otherwise, construct from the downloaded repo
-    # HuggingFace downloads to ~/.cache/huggingface/hub/models--{org}--{repo}/snapshots/{hash}
     from huggingface_hub import snapshot_download
     
-    try:
-        repo_path = snapshot_download(repo_id=LORA_REPO)
-        lora_path = os.path.join(repo_path, "lora", LORA_VOICE)
-        
-        if os.path.isdir(lora_path):
-            print(f"Using LoRA weights from: {lora_path}")
-            return lora_path
-        else:
-            print(f"LoRA path not found: {lora_path}")
-            return None
-    except Exception as e:
-        print(f"Failed to download LoRA repo: {e}")
-        return None
+    # Download the repo (contains both base model and LoRA)
+    repo_path = snapshot_download(repo_id=MODEL_REPO)
+    
+    # Base model is at the root of the repo
+    model_path = repo_path
+    
+    # LoRA weights are under lora/{voice}/
+    lora_path = os.path.join(repo_path, "lora", LORA_VOICE)
+    
+    print(f"Model path: {model_path}")
+    print(f"LoRA path: {lora_path}")
+    
+    if not os.path.isdir(lora_path):
+        raise FileNotFoundError(f"LoRA path not found: {lora_path}")
+    
+    return model_path, lora_path
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Get LoRA path (downloads if necessary)
-    lora_path = get_lora_path()
+    # Get model and LoRA paths (downloads if necessary)
+    model_path, lora_path = get_model_paths()
     
-    # VoxCPM.from_pretrained handles HuggingFace download automatically
     global_instances["server"] = VoxCPM.from_pretrained(
-        model=BASE_MODEL,
+        model=model_path,
         max_num_batched_tokens=24576,  # Supports full 48-way batching at 512 max len
         max_num_seqs=48,               # Limit concurrent sequences
         max_model_len=512,             # 60 input + 375 audio (15s) + buffer
