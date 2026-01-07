@@ -29,9 +29,9 @@ class Config(Generic[T]):
     # torch.compile configuration
     use_torch_compile: bool = False
     compile_mode: Literal["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"] = "reduce-overhead"
-    # Which submodules to compile: "all", "estimator", "encoder", "lm"
-    # Default includes both estimator (DiT) and lm (base language model) for best performance
-    compile_targets: List[str] = field(default_factory=lambda: ["estimator", "lm"])
+    # Which submodules to compile: "all", "estimator", "encoder", "lm", "residual_lm"
+    # Default includes all major compute paths for best performance
+    compile_targets: List[str] = field(default_factory=lambda: ["estimator", "lm", "residual_lm", "encoder"])
     # Use fullgraph=True for maximum optimization (may fail on complex control flow)
     compile_fullgraph: bool = False
     # Dynamic shapes - set to True for variable batch/seq lengths

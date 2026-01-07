@@ -114,7 +114,7 @@ class VoxCPMRunner(BaseModelRunner):
         # torch.compile configuration
         self.use_torch_compile = getattr(config, 'use_torch_compile', False)
         self.compile_mode = getattr(config, 'compile_mode', 'reduce-overhead')
-        self.compile_targets = getattr(config, 'compile_targets', ['estimator', 'lm'])
+        self.compile_targets = getattr(config, 'compile_targets', ['estimator', 'lm', 'residual_lm', 'encoder'])
         self.compile_fullgraph = getattr(config, 'compile_fullgraph', False)
         self.compile_dynamic = getattr(config, 'compile_dynamic', True)
         
