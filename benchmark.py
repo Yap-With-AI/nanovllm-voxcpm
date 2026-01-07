@@ -17,6 +17,7 @@ class RequestMetrics:
     """Metrics for a single request"""
     request_id: int
     text: str
+    voice: str = "female"  # Voice used for this request
     
     # Timing
     start_time: float = 0.0
@@ -198,12 +199,14 @@ async def run_single_request(
     max_generate_length: int,
     temperature: float,
     cfg_value: float,
+    voice: str = "female",
 ) -> RequestMetrics:
     """Run a single TTS request and collect metrics (reuses provided client/connection)"""
     
     metrics = RequestMetrics(
         request_id=request_id,
         text=text,
+        voice=voice,
     )
     
     first_chunk_received = False
@@ -219,6 +222,7 @@ async def run_single_request(
             "temperature": temperature,
             "cfg_value": cfg_value,
             "max_generate_length": max_generate_length,
+            "voice": voice,
         },
     ) as response:
         response.raise_for_status()
@@ -245,21 +249,31 @@ async def run_batch(
     temperature: float,
     cfg_value: float,
     start_id: int = 0,
+    alternate_voices: bool = False,
 ) -> List[RequestMetrics]:
-    """Run a batch of concurrent requests (reusing a shared client/connection pool)"""
+    """Run a batch of concurrent requests (reusing a shared client/connection pool)
     
-    tasks = [
-        run_single_request(
-            client,
-            server_url,
-            start_id + i,
-            text,
-            max_generate_length,
-            temperature,
-            cfg_value,
+    Args:
+        alternate_voices: If True, even request IDs use male voice, odd use female
+    """
+    
+    tasks = []
+    for i, text in enumerate(texts):
+        request_id = start_id + i
+        # Alternate voices: even IDs = male, odd IDs = female
+        voice = "male" if (alternate_voices and request_id % 2 == 0) else "female"
+        tasks.append(
+            run_single_request(
+                client,
+                server_url,
+                request_id,
+                text,
+                max_generate_length,
+                temperature,
+                cfg_value,
+                voice=voice,
+            )
         )
-        for i, text in enumerate(texts)
-    ]
     
     return await asyncio.gather(*tasks)
 
@@ -273,8 +287,13 @@ async def run_benchmark(
     cfg_value: float,
     texts: List[str] = None,
     warm_connections: bool = True,
+    alternate_voices: bool = True,
 ) -> BenchmarkResults:
-    """Run the full benchmark"""
+    """Run the full benchmark
+    
+    Args:
+        alternate_voices: If True, alternate between male (even) and female (odd) voices
+    """
     
     if texts is None:
         texts = SAMPLE_TEXTS
@@ -295,6 +314,7 @@ async def run_benchmark(
                 temperature,
                 cfg_value,
                 start_id=-warm_batch_size,  # negative ids to avoid overlap
+                alternate_voices=alternate_voices,
             )
             print("Warm connection batch complete.\n")
         
@@ -303,6 +323,9 @@ async def run_benchmark(
         # Process requests in batches of `concurrency`
         request_id = 0
         remaining = num_requests
+        
+        voice_mode = "alternating (male/female)" if alternate_voices else "female only"
+        print(f"Voice mode: {voice_mode}")
         
         while remaining > 0:
             batch_size = min(concurrency, remaining)
@@ -318,11 +341,12 @@ async def run_benchmark(
                 temperature,
                 cfg_value,
                 request_id,
+                alternate_voices=alternate_voices,
             )
             
             for m in batch_metrics:
                 results.add(m)
-                print(f"  Request {m.request_id + 1}: "
+                print(f"  Request {m.request_id + 1} [{m.voice}]: "
                       f"TTFB={m.ttfb*1000:.0f}ms, "
                       f"Total={m.total_time:.2f}s, "
                       f"Audio={m.audio_duration:.2f}s, "
@@ -339,11 +363,14 @@ async def run_benchmark(
 async def main_async(args):
     print(f"Connecting to server at {args.server}...")
     
-    # Check server health
+    # Check server health and available voices
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(f"{args.server}/health", timeout=5)
             resp.raise_for_status()
+            health_data = resp.json()
+            available_voices = health_data.get("available_voices", [])
+            print(f"Available voices: {available_voices}")
         except Exception as e:
             print(f"ERROR: Cannot connect to server at {args.server}")
             print(f"Make sure the FastAPI server is running:")
@@ -362,11 +389,13 @@ async def main_async(args):
             max_generate_length=args.max_generate_length,
             temperature=args.temperature,
             cfg_value=args.cfg_value,
+            alternate_voices=args.alternate_voices,
         )
         print("Warmup complete.\n")
     
     # Run benchmark
-    print(f"Starting benchmark: {args.num_requests} requests, concurrency={args.concurrency}")
+    voice_mode = "alternating male/female" if args.alternate_voices else "female only"
+    print(f"Starting benchmark: {args.num_requests} requests, concurrency={args.concurrency}, voice={voice_mode}")
     results = await run_benchmark(
         args.server,
         num_requests=args.num_requests,
@@ -375,6 +404,7 @@ async def main_async(args):
         temperature=args.temperature,
         cfg_value=args.cfg_value,
         warm_connections=not args.no_warm_connections,
+        alternate_voices=args.alternate_voices,
     )
     
     results.print_report()
@@ -398,6 +428,10 @@ def main():
                         help="Number of warmup requests (server already warm)")
     parser.add_argument("--no-warm-connections", action="store_true",
                         help="Disable pre-connection warm batch (measures first-use handshakes)")
+    parser.add_argument("--alternate-voices", action="store_true", default=True,
+                        help="Alternate between male (even IDs) and female (odd IDs) voices (default: True)")
+    parser.add_argument("--no-alternate-voices", dest="alternate_voices", action="store_false",
+                        help="Use female voice only (disable voice alternation)")
     
     args = parser.parse_args()
     

@@ -25,7 +25,7 @@ def main(args):
     
     print(f"Server ready!\n")
     print(f"Generating audio for: \"{args.text[:80]}{'...' if len(args.text) > 80 else ''}\"")
-    print(f"Temperature: {args.temperature}, CFG: {args.cfg_value}")
+    print(f"Temperature: {args.temperature}, CFG: {args.cfg_value}, Voice: {args.voice}")
     print("-" * 60)
 
     chunks = []
@@ -45,6 +45,7 @@ def main(args):
                 "temperature": args.temperature,
                 "cfg_value": args.cfg_value,
                 "max_generate_length": args.max_generate_length,
+                "voice": args.voice,
             },
         ) as response:
             response.raise_for_status()
@@ -127,6 +128,8 @@ if __name__ == "__main__":
                         help="Max audio tokens (~15s at 400)")
     parser.add_argument("--output", type=str, default="output.wav",
                         help="Output WAV file path")
+    parser.add_argument("--voice", type=str, default="female", choices=["female", "male"],
+                        help="Voice to use: 'female' (default) or 'male'")
 
     args = parser.parse_args()
     main(args)

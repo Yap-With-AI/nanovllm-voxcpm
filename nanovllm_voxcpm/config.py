@@ -22,6 +22,9 @@ class Config(Generic[T]):
     
     # LoRA configuration
     lora_path: Optional[str] = None
+    # Multi-LoRA support for voice hotswapping (e.g., {"female": "/path/female", "male": "/path/male"})
+    lora_paths: Optional[dict[str, str]] = None
+    default_voice: str = "female"
     
     # torch.compile configuration
     use_torch_compile: bool = False

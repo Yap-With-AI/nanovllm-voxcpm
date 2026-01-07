@@ -902,8 +902,30 @@ class VoxCPMModel(nn.Module):
                 module.reset_lora_parameters()
 
     def get_lora_state_dict(self) -> dict:
-        """Get all LoRA parameters (lora_A/lora_B)."""
-        return {name: param.data.clone() for name, param in self.named_parameters() if "lora_" in name}
+        """Get all LoRA parameters (lora_A/lora_B) and their pre-computed deltas."""
+        state = {}
+        for name, param in self.named_parameters():
+            if "lora_" in name:
+                state[name] = param.data.clone()
+        # Also save pre-computed deltas
+        for name, buffer in self.named_buffers():
+            if "_delta" in name:
+                state[name] = buffer.data.clone()
+        return state
+    
+    def set_lora_state_dict(self, state_dict: dict, device: str = "cuda") -> None:
+        """Set LoRA parameters and their pre-computed deltas from a state dict.
+        
+        This enables instant hotswapping between different LoRA weights.
+        """
+        model_params = dict(self.named_parameters())
+        model_buffers = dict(self.named_buffers())
+        
+        for key, value in state_dict.items():
+            if key in model_params:
+                model_params[key].data.copy_(value.to(device))
+            elif key in model_buffers:
+                model_buffers[key].data.copy_(value.to(device))
     
     def forward(
             self,

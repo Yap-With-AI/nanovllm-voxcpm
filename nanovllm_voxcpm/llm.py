@@ -29,6 +29,9 @@ class VoxCPM:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path: Optional[str] = None,
+        # Multi-LoRA support for voice hotswapping
+        lora_paths: Optional[dict[str, str]] = None,
+        default_voice: str = "female",
         # torch.compile options for improved performance
         use_torch_compile: bool = False,
         compile_mode: str = "reduce-overhead",
@@ -50,6 +53,9 @@ class VoxCPM:
             devices: List of GPU device indices to use
             lora_path: Path to LoRA weights directory containing lora_config.json 
                        and lora_weights.safetensors (or lora_weights.bin)
+            lora_paths: Dict mapping voice names to LoRA paths for multi-LoRA hotswapping
+                       e.g., {"female": "/path/to/female", "male": "/path/to/male"}
+            default_voice: Default voice to use (default: "female")
             use_torch_compile: Enable torch.compile for optimized inference
             compile_mode: Compilation mode - "default", "reduce-overhead" (best for latency), 
                          "max-autotune" (best throughput, longer compile), "max-autotune-no-cudagraphs"
@@ -82,6 +88,19 @@ class VoxCPM:
             
             if not os.path.isdir(resolved_lora_path):
                 raise ValueError(f"LoRA path {resolved_lora_path} does not exist")
+        
+        # Resolve lora_paths if provided (for multi-LoRA hotswapping)
+        resolved_lora_paths = None
+        if lora_paths is not None:
+            resolved_lora_paths = {}
+            for voice_name, path in lora_paths.items():
+                if "~" in path:
+                    resolved_path = os.path.expanduser(path)
+                else:
+                    resolved_path = path
+                if not os.path.isdir(resolved_path):
+                    raise ValueError(f"LoRA path for voice '{voice_name}' does not exist: {resolved_path}")
+                resolved_lora_paths[voice_name] = resolved_path
         
         config_file = os.path.expanduser(os.path.join(model_path, "config.json"))
         
@@ -126,6 +145,8 @@ class VoxCPM:
                     enforce_eager=enforce_eager,
                     devices=devices,
                     lora_path=resolved_lora_path,
+                    lora_paths=resolved_lora_paths,
+                    default_voice=default_voice,
                     **compile_opts,
                     **kwargs,
                 )
@@ -140,6 +161,8 @@ class VoxCPM:
                     enforce_eager=enforce_eager,
                     devices=devices,
                     lora_path=resolved_lora_path,
+                    lora_paths=resolved_lora_paths,
+                    default_voice=default_voice,
                     **compile_opts,
                     **kwargs,
                 )

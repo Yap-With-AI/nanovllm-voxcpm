@@ -5,6 +5,7 @@ from nanovllm_voxcpm import VoxCPM
 import base64
 import os
 from pydantic import BaseModel
+from typing import List
 
 app = FastAPI()
 
@@ -14,41 +15,51 @@ app = FastAPI()
 #   - lora/female/ (female voice LoRA)
 #   - lora/male/ (male voice LoRA)
 MODEL_REPO = "yapwithai/vox-1.5-orpheus-distil"
-LORA_VOICE = "female"  # Use female voice by default
+DEFAULT_VOICE = "female"  # Default voice
 
 global_instances = {}
 
 
-def get_model_paths() -> tuple[str, str]:
-    """Get paths to the model and LoRA weights.
+def get_multi_lora_paths() -> tuple[str, dict[str, str]]:
+    """Get paths to the model and all LoRA weights for hotswapping.
     
     Returns:
-        Tuple of (model_path, lora_path)
+        Tuple of (model_path, lora_paths_dict)
     """
     from huggingface_hub import snapshot_download
     
-    # Download the repo (contains both base model and LoRA)
+    # Download the repo (contains both base model and LoRAs)
     repo_path = snapshot_download(repo_id=MODEL_REPO)
     
     # Base model is at the root of the repo
     model_path = repo_path
     
-    # LoRA weights are under lora/{voice}/
-    lora_path = os.path.join(repo_path, "lora", LORA_VOICE)
+    # Discover all available LoRA voices
+    lora_base = os.path.join(repo_path, "lora")
+    lora_paths = {}
+    
+    # Look for female and male LoRAs
+    for voice in ["female", "male"]:
+        voice_path = os.path.join(lora_base, voice)
+        if os.path.isdir(voice_path):
+            lora_paths[voice] = voice_path
+            print(f"Found LoRA for voice '{voice}': {voice_path}")
+        else:
+            print(f"Warning: LoRA path not found for voice '{voice}': {voice_path}")
+    
+    if not lora_paths:
+        raise FileNotFoundError(f"No LoRA paths found in {lora_base}")
     
     print(f"Model path: {model_path}")
-    print(f"LoRA path: {lora_path}")
+    print(f"LoRA paths: {lora_paths}")
     
-    if not os.path.isdir(lora_path):
-        raise FileNotFoundError(f"LoRA path not found: {lora_path}")
-    
-    return model_path, lora_path
+    return model_path, lora_paths
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Get model and LoRA paths (downloads if necessary)
-    model_path, lora_path = get_model_paths()
+    # Get model and multi-LoRA paths (downloads if necessary)
+    model_path, lora_paths = get_multi_lora_paths()
     
     global_instances["server"] = VoxCPM.from_pretrained(
         model=model_path,
@@ -58,9 +69,16 @@ async def lifespan(app: FastAPI):
         gpu_memory_utilization=0.92,   # Slightly higher GPU use for batching
         enforce_eager=False,
         devices=[0],
-        lora_path=lora_path,
+        # Multi-LoRA hotswapping: load both female and male at startup
+        lora_paths=lora_paths,
+        default_voice=DEFAULT_VOICE,
     )
     await global_instances["server"].wait_for_ready()
+    
+    # Log available voices
+    voices = await global_instances["server"].get_available_voices()
+    print(f"Server ready with voices: {voices}")
+    
     yield
     await global_instances["server"].stop()
     del global_instances["server"]
@@ -71,7 +89,21 @@ app = FastAPI(lifespan=lifespan)
 async def health():
     server = global_instances.get("server")
     sample_rate = getattr(server, "sample_rate", None)
-    return {"status": "ok", "sample_rate": sample_rate}
+    available_voices = await server.get_available_voices() if server else []
+    return {
+        "status": "ok",
+        "sample_rate": sample_rate,
+        "available_voices": available_voices,
+    }
+
+
+@app.get("/voices")
+async def list_voices() -> List[str]:
+    """Get list of available voice names for hotswapping."""
+    server = global_instances.get("server")
+    if server:
+        return await server.get_available_voices()
+    return []
 
 
 class AddPromptRequest(BaseModel):
@@ -103,6 +135,7 @@ class GenerateRequest(BaseModel):
     max_generate_length : int = 400  # ~15 seconds max
     temperature : float = 1.0
     cfg_value : float = 2.0
+    voice : str | None = None  # Voice selection: "female" or "male" (default: female)
 
 
 async def numpy_to_bytes(gen) :
@@ -123,11 +156,13 @@ async def generate(request: GenerateRequest):
                 max_generate_length=request.max_generate_length,
                 temperature=request.temperature,
                 cfg_value=request.cfg_value,
+                voice=request.voice,
             )
         ),
         media_type="audio/raw",
         headers={
             "X-Sample-Rate": str(sample_rate) if sample_rate else "",
             "X-Dtype": "float32",
+            "X-Voice": request.voice or DEFAULT_VOICE,
         },
     )

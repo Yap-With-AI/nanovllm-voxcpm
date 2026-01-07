@@ -26,6 +26,9 @@ class VoxCPMServerImpl:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path : str | None = None,
+        # Multi-LoRA support for voice hotswapping
+        lora_paths : dict[str, str] | None = None,
+        default_voice : str = "female",
         # torch.compile options
         use_torch_compile: bool = False,
         compile_mode: str = "reduce-overhead",
@@ -49,6 +52,9 @@ class VoxCPMServerImpl:
             model_config=model_config,
             devices=devices,
             lora_path=lora_path,
+            # Multi-LoRA support
+            lora_paths=lora_paths,
+            default_voice=default_voice,
             # torch.compile options
             use_torch_compile=use_torch_compile,
             compile_mode=compile_mode,
@@ -63,7 +69,21 @@ class VoxCPMServerImpl:
     def health(self):
         return {
             "status": "ok",
+            "available_voices": self.get_available_voices(),
+            "current_voice": self.get_current_voice(),
         }
+    
+    def switch_voice(self, voice: str) -> bool:
+        """Switch to a different LoRA voice instantly."""
+        return self.llm.model_runner.switch_voice(voice)
+    
+    def get_available_voices(self) -> List[str]:
+        """Get list of available voice names."""
+        return self.llm.model_runner.get_available_voices()
+    
+    def get_current_voice(self) -> str | None:
+        """Get currently active voice name."""
+        return self.llm.model_runner.get_current_voice()
     
     def encode_latents(self, wav : bytes, wav_format : str):
         wav, sr = torchaudio.load(io.BytesIO(wav), format=wav_format)
@@ -86,8 +106,14 @@ class VoxCPMServerImpl:
         prompt_text : str = "",
         max_generate_length : int = 2000,
         temperature : float = 1.0,
-        cfg_value : float = 2.0
+        cfg_value : float = 2.0,
+        voice : str | None = None
     ):
+        # Switch voice if specified (instant hotswap, no model reload)
+        if voice is not None:
+            if not self.switch_voice(voice):
+                raise ValueError(f"Voice '{voice}' not available. Available: {self.get_available_voices()}")
+        
         if prompt_latents is not None:
             if len(prompt_text) == 0:
                 raise ValueError("Prompt text is required when prompt latents are provided")
@@ -209,6 +235,9 @@ class AsyncVoxCPMServer:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path : str | None = None,
+        # Multi-LoRA support for voice hotswapping
+        lora_paths : dict[str, str] | None = None,
+        default_voice : str = "female",
         # torch.compile options
         use_torch_compile: bool = False,
         compile_mode: str = "reduce-overhead",
@@ -230,6 +259,8 @@ class AsyncVoxCPMServer:
                 self.queue_out, 
                 (model_path, inference_timesteps, max_num_batched_tokens, max_num_seqs, max_model_len, gpu_memory_utilization, enforce_eager, devices, lora_path), 
                 {
+                    "lora_paths": lora_paths,
+                    "default_voice": default_voice,
                     "use_torch_compile": use_torch_compile,
                     "compile_mode": compile_mode,
                     "compile_targets": compile_targets,
@@ -298,6 +329,18 @@ class AsyncVoxCPMServer:
         self.recv_task.cancel()
         await asyncio.to_thread(self.process.join)
     
+    async def switch_voice(self, voice: str) -> bool:
+        """Switch to a different LoRA voice instantly."""
+        return await self.submit("switch_voice", voice)
+    
+    async def get_available_voices(self) -> List[str]:
+        """Get list of available voice names."""
+        return await self.submit("get_available_voices")
+    
+    async def get_current_voice(self) -> str | None:
+        """Get currently active voice name."""
+        return await self.submit("get_current_voice")
+    
     async def generate(
         self,
         target_text : str,
@@ -305,14 +348,15 @@ class AsyncVoxCPMServer:
         prompt_text : str = "",
         max_generate_length : int = 2000,
         temperature : float = 1.0,
-        cfg_value : float = 2.0
+        cfg_value : float = 2.0,
+        voice : str | None = None
     ):
         seq_id = gen_uuid()
         self.stream_table[seq_id] = asyncio.Queue()
 
         is_normal_exit = False
         try:
-            await self.submit("add_request", seq_id, target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value)
+            await self.submit("add_request", seq_id, target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value, voice)
 
             while True:
                 data = await self.stream_table[seq_id].get()
@@ -337,6 +381,9 @@ class AsyncVoxCPMServerPool:
         enforce_eager: bool = False,
         devices : List[int] = [],
         lora_path : str | None = None,
+        # Multi-LoRA support for voice hotswapping
+        lora_paths : dict[str, str] | None = None,
+        default_voice : str = "female",
         # torch.compile options
         use_torch_compile: bool = False,
         compile_mode: str = "reduce-overhead",
@@ -359,6 +406,8 @@ class AsyncVoxCPMServerPool:
                 enforce_eager=enforce_eager,
                 devices=[device_idx],
                 lora_path=lora_path,
+                lora_paths=lora_paths,
+                default_voice=default_voice,
                 use_torch_compile=use_torch_compile,
                 compile_mode=compile_mode,
                 compile_targets=compile_targets,
@@ -395,6 +444,12 @@ class AsyncVoxCPMServerPool:
     async def remove_prompt(self, prompt_id : str):
         del self._prompt_pool[prompt_id]
     
+    async def get_available_voices(self) -> List[str]:
+        """Get list of available voice names from the first server."""
+        if self.servers:
+            return await self.servers[0].get_available_voices()
+        return []
+    
     async def generate(
         self,
         target_text : str,
@@ -403,7 +458,8 @@ class AsyncVoxCPMServerPool:
         prompt_id : str | None = None,
         max_generate_length : int = 2000,
         temperature : float = 1.0,
-        cfg_value : float = 2.0
+        cfg_value : float = 2.0,
+        voice : str | None = None
     ):
         if prompt_id is not None:
             if prompt_id not in self._prompt_pool:
@@ -423,7 +479,7 @@ class AsyncVoxCPMServerPool:
         server = self.servers[min_load_server_idx]
 
         try:
-            async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value):
+            async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value, voice):
                 yield data
         finally:
             self.servers_load[min_load_server_idx] -= 1
@@ -439,6 +495,9 @@ class SyncVoxCPMServerPool:
             enforce_eager: bool = False,
             devices : List[int] = [],
             lora_path : str | None = None,
+            # Multi-LoRA support for voice hotswapping
+            lora_paths : dict[str, str] | None = None,
+            default_voice : str = "female",
             # torch.compile options
             use_torch_compile: bool = False,
             compile_mode: str = "reduce-overhead",
@@ -458,6 +517,8 @@ class SyncVoxCPMServerPool:
                 enforce_eager=enforce_eager,
                 devices=devices,
                 lora_path=lora_path,
+                lora_paths=lora_paths,
+                default_voice=default_voice,
                 use_torch_compile=use_torch_compile,
                 compile_mode=compile_mode,
                 compile_targets=compile_targets,
@@ -484,8 +545,12 @@ class SyncVoxCPMServerPool:
     def remove_prompt(self, prompt_id : str):
         return self.loop.run_until_complete(self.server_pool.remove_prompt(prompt_id))
     
-    def generate(self, target_text : str, prompt_latents : bytes | None = None, prompt_text : str = "", prompt_id : str | None = None, max_generate_length : int = 2000, temperature : float = 1.0, cfg_value : float = 2.0):
-        async_gen = self.server_pool.generate(target_text, prompt_latents, prompt_text, prompt_id, max_generate_length, temperature, cfg_value)
+    def get_available_voices(self) -> List[str]:
+        """Get list of available voice names."""
+        return self.loop.run_until_complete(self.server_pool.get_available_voices())
+    
+    def generate(self, target_text : str, prompt_latents : bytes | None = None, prompt_text : str = "", prompt_id : str | None = None, max_generate_length : int = 2000, temperature : float = 1.0, cfg_value : float = 2.0, voice : str | None = None):
+        async_gen = self.server_pool.generate(target_text, prompt_latents, prompt_text, prompt_id, max_generate_length, temperature, cfg_value, voice)
         try:
             while True:
                 item = self.loop.run_until_complete(async_gen.__anext__())
