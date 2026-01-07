@@ -210,13 +210,14 @@ class VoxCPMRunner(BaseModelRunner):
         
         # Pre-allocate pinned memory buffers for fast async CPU->GPU transfers
         # Size based on max batch size * max sequence length
+        # NOTE: Must explicitly set device="cpu" since default device may be "cuda"
         max_tokens = self._config.max_num_batched_tokens
-        self._pinned_text_tokens = torch.empty(max_tokens, dtype=torch.int64, pin_memory=True)
-        self._pinned_feats = torch.empty(max_tokens, self.patch_size, self.feat_dim, dtype=torch.float32, pin_memory=True)
-        self._pinned_feat_masks = torch.empty(max_tokens, dtype=torch.bool, pin_memory=True)
+        self._pinned_text_tokens = torch.empty(max_tokens, dtype=torch.int64, device="cpu", pin_memory=True)
+        self._pinned_feats = torch.empty(max_tokens, self.patch_size, self.feat_dim, dtype=torch.float32, device="cpu", pin_memory=True)
+        self._pinned_feat_masks = torch.empty(max_tokens, dtype=torch.bool, device="cpu", pin_memory=True)
         self._pinned_padding_decode = torch.empty(
             self.max_num_seqs, self.N_DECODE_PAD_FRAMES, self.feat_dim, 
-            dtype=torch.float32, pin_memory=True
+            dtype=torch.float32, device="cpu", pin_memory=True
         )
         logger.info(f"Pre-allocated pinned buffers: text_tokens={self._pinned_text_tokens.shape}, feats={self._pinned_feats.shape}")
         
