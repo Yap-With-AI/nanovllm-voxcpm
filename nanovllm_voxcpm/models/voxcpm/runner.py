@@ -203,11 +203,6 @@ class VoxCPMRunner(BaseModelRunner):
         
         torch.set_default_dtype(torch.bfloat16)
         
-        # Warmup main model at various batch sizes for torch.compile
-        # This ensures prefill mode is warmed up at all batch sizes (decode is handled by CUDA graphs)
-        if self.use_torch_compile:
-            self._warmup_model_batch_sizes()
-        
         # Warmup all LoRAs for JIT compilation if multi-LoRA mode
         if self.lora_paths is not None and self.use_torch_compile:
             self._warmup_all_loras()
@@ -268,66 +263,6 @@ class VoxCPMRunner(BaseModelRunner):
         
         torch.cuda.synchronize()
         logger.info("VAE batch size warmup complete")
-    
-    @torch.inference_mode()
-    def _warmup_model_batch_sizes(self):
-        """Warmup model at various batch sizes to pre-compile torch.compile for prefill.
-        
-        CUDA graphs handle decode mode warmup, but prefill mode with torch.compile
-        needs explicit warmup at different batch sizes to avoid first-run overhead.
-        """
-        from nanovllm_voxcpm.utils.context import set_context, reset_context
-        
-        # Same batch sizes as VAE warmup
-        warmup_sizes = [1]
-        power = 2
-        while power <= self.max_num_seqs:
-            warmup_sizes.append(power)
-            power *= 2
-        if self.max_num_seqs not in warmup_sizes:
-            warmup_sizes.append(self.max_num_seqs)
-        warmup_sizes = sorted(warmup_sizes)
-        
-        logger.info(f"Warming up model (prefill) for batch sizes: {warmup_sizes}")
-        
-        # Use actual configured sequence length for warmup
-        seq_len = self._config.max_model_len
-        
-        for bs in warmup_sizes:
-            # Create dummy inputs matching model.forward() signature
-            total_tokens = bs * seq_len
-            
-            dummy_inputs = {
-                "positions": torch.arange(seq_len, dtype=torch.int64, device="cuda").repeat(bs),
-                "text_tokens": torch.zeros(total_tokens, dtype=torch.int64, device="cuda"),
-                "feat": torch.zeros(total_tokens, self.patch_size, self.feat_dim, dtype=self.dtype, device="cuda"),
-                "feat_mask": torch.zeros(total_tokens, dtype=torch.bool, device="cuda"),
-                "temperature": torch.ones(bs, dtype=self.dtype, device="cuda"),
-                "cfg_value": torch.ones(bs, dtype=self.dtype, device="cuda") * 2.0,
-            }
-            
-            # Setup prefill context
-            cu_seqlens_q = torch.tensor([i * seq_len for i in range(bs + 1)], dtype=torch.int32, device="cuda")
-            cu_seqlens_k = cu_seqlens_q.clone()
-            slot_mapping = torch.arange(total_tokens, dtype=torch.int32, device="cuda")
-            
-            set_context(
-                is_prefill=True,
-                cu_seqlens_q=cu_seqlens_q,
-                cu_seqlens_k=cu_seqlens_k,
-                max_seqlen_q=seq_len,
-                max_seqlen_k=seq_len,
-                slot_mapping=slot_mapping,
-                context_lens=None,
-                block_tables=None,
-            )
-            
-            # Run model forward
-            _ = self.model(**dummy_inputs)
-            reset_context()
-        
-        torch.cuda.synchronize()
-        logger.info("Model batch size warmup complete")
     
     def _load_lora_config(self, lora_path: str) -> LoRAConfig:
         """Load LoRA config from a directory containing lora_config.json.
