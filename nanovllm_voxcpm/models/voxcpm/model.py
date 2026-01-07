@@ -634,7 +634,7 @@ class UnifiedCFM(torch.nn.Module):
         x_in = torch.empty([2 * b, self.in_channels, seq_len], device=device, dtype=dtype)
         mu_in = torch.zeros([2 * b, mu_dim], device=device, dtype=dtype)  # zeros for unconditional half
         t_in = torch.empty([2 * b], device=device, dtype=dtype)
-        dt_in = torch.zeros([2 * b], device=device, dtype=dtype) if not self.mean_mode else torch.empty([2 * b], device=device, dtype=dtype)
+        dt_in = torch.zeros([2 * b], device=device, dtype=dtype)
         cond_in = torch.empty([2 * b, self.in_channels, seq_len], device=device, dtype=dtype)
         
         # Pre-fill static parts (unconditional mu stays zero, cond is same for both halves)
@@ -646,11 +646,12 @@ class UnifiedCFM(torch.nn.Module):
 
         for step in range(1, len(t_span)):
             # Fill pre-allocated tensors (much faster than allocation)
+            # Use copy_ and expand to stay GPU-side (no .item() - breaks CUDA graph capture)
             x_in[:b] = x
             x_in[b:] = x
-            t_in.fill_(t.item())
+            t_in[:] = t  # Broadcast scalar tensor to all elements
             if self.mean_mode:
-                dt_in.fill_(dt.item())
+                dt_in[:] = dt
 
             dphi_dt = self.estimator(x_in, mu_in, t_in, cond_in, dt_in)
             dphi_dt, cfg_dphi_dt = dphi_dt[:b], dphi_dt[b:]
