@@ -34,6 +34,9 @@ def load_model(model: nn.Module, path: str):
     missing_param_names = []
     for name, _ in model.named_parameters():
         if name not in visited_param_names:
+            # Skip LoRA parameters - they are loaded separately from lora_weights.safetensors
+            if "lora" in name.lower():
+                continue
             missing_param_names.append(name)
     
     if missing_param_names:
