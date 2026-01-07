@@ -10,6 +10,9 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("high")
 
+# Enable cuDNN autotuning for optimal conv kernel selection (benefits VAE)
+torch.backends.cudnn.benchmark = True
+
 try:
     # check if flash-attn is installed
     import flash_attn

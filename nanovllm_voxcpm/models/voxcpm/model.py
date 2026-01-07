@@ -561,6 +561,12 @@ class UnifiedCFM(torch.nn.Module):
 
         # Just change the architecture of the estimator here
         self.estimator = estimator
+        
+        # Pre-compute t_span with sway sampling (constant across all calls)
+        # Will be moved to correct device/dtype on first forward
+        t_span = torch.linspace(1, 0, inference_timesteps + 1)
+        t_span = t_span + (torch.cos(torch.pi / 2 * t_span) - 1 + t_span)
+        self.register_buffer('_t_span_base', t_span, persistent=False)
 
     def forward(
         self,
@@ -587,9 +593,8 @@ class UnifiedCFM(torch.nn.Module):
         t = self.patch_size
         z = torch.randn((b, self.in_channels, t), device=mu.device, dtype=mu.dtype) * temperature[:, None, None]
 
-        t_span = torch.linspace(1, 0, self.inference_timesteps + 1, device=mu.device, dtype=mu.dtype)
-        # Sway sampling strategy
-        t_span = t_span + (torch.cos(torch.pi / 2 * t_span) - 1 + t_span)
+        # Use pre-computed t_span, cast to correct dtype if needed
+        t_span = self._t_span_base.to(dtype=mu.dtype)
 
         return self.solve_euler(z, t_span=t_span, mu=mu, cond=cond, cfg_value=cfg_value)
 
@@ -619,27 +624,36 @@ class UnifiedCFM(torch.nn.Module):
             cond: condition -- prefix prompt
             cfg_value (float, optional): cfg value for guidance. Defaults to 1.0.
         """
+        b = x.size(0)
+        seq_len = x.size(2)
+        mu_dim = mu.size(1)
+        device = x.device
+        dtype = x.dtype
+        
+        # Pre-allocate CFG tensors once (reused across all timesteps)
+        x_in = torch.empty([2 * b, self.in_channels, seq_len], device=device, dtype=dtype)
+        mu_in = torch.zeros([2 * b, mu_dim], device=device, dtype=dtype)  # zeros for unconditional half
+        t_in = torch.empty([2 * b], device=device, dtype=dtype)
+        dt_in = torch.zeros([2 * b], device=device, dtype=dtype) if not self.mean_mode else torch.empty([2 * b], device=device, dtype=dtype)
+        cond_in = torch.empty([2 * b, self.in_channels, seq_len], device=device, dtype=dtype)
+        
+        # Pre-fill static parts (unconditional mu stays zero, cond is same for both halves)
+        mu_in[:b] = mu
+        cond_in[:b] = cond
+        cond_in[b:] = cond
+        
         t, _, dt = t_span[0], t_span[-1], t_span[0] - t_span[1]
 
         for step in range(1, len(t_span)):
-            # Classifier-Free Guidance inference introduced in VoiceBox
-            b = x.size(0)
-            x_in = torch.zeros([2 * b, self.in_channels, x.size(2)], device=x.device, dtype=x.dtype)
-            mu_in = torch.zeros([2 * b, mu.size(1)], device=x.device, dtype=x.dtype)
-            t_in = torch.zeros([2 * b], device=x.device, dtype=x.dtype)
-            dt_in = torch.zeros([2 * b], device=x.device, dtype=x.dtype)
-            cond_in = torch.zeros([2 * b, self.in_channels, x.size(2)], device=x.device, dtype=x.dtype)
-            x_in[:b], x_in[b:] = x, x
-            mu_in[:b] = mu
-            t_in[:b], t_in[b:] = t.unsqueeze(0), t.unsqueeze(0)
-            dt_in[:b], dt_in[b:] = dt.unsqueeze(0), dt.unsqueeze(0)
-            # not used now
-            if not self.mean_mode:
-                dt_in = torch.zeros_like(dt_in)
-            cond_in[:b], cond_in[b:] = cond, cond
+            # Fill pre-allocated tensors (much faster than allocation)
+            x_in[:b] = x
+            x_in[b:] = x
+            t_in.fill_(t.item())
+            if self.mean_mode:
+                dt_in.fill_(dt.item())
 
             dphi_dt = self.estimator(x_in, mu_in, t_in, cond_in, dt_in)
-            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
+            dphi_dt, cfg_dphi_dt = dphi_dt[:b], dphi_dt[b:]
             
             positive_flat = dphi_dt.view(b, -1)
             negative_flat = cfg_dphi_dt.view(b, -1)
@@ -650,11 +664,10 @@ class UnifiedCFM(torch.nn.Module):
 
             x = x - dt * dphi_dt
             t = t - dt
-            sol = x
             if step < len(t_span) - 1:
                 dt = t - t_span[step + 1]
 
-        return sol
+        return x
 
 
 class VoxCPMLocEnc(nn.Module):

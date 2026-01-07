@@ -11,6 +11,7 @@ from nanovllm_voxcpm.utils.loader import load_model
 from nanovllm_voxcpm.models.voxcpm.model import VoxCPMModel, VoxCPMConfig
 from nanovllm_voxcpm.models.voxcpm.config import LoRAConfig
 from nanovllm_voxcpm.layers.audio_vae import AudioVAE
+from torch.nn.utils import remove_weight_norm
 import numpy as np
 import os
 
@@ -173,11 +174,35 @@ class VoxCPMRunner(BaseModelRunner):
 
         vae_state_dict = torch.load(os.path.join(model_path, "audiovae.pth"))["state_dict"]
         self.vae.load_state_dict(vae_state_dict)
+        
+        # Fuse weight_norm for inference (removes runtime overhead)
+        self._fuse_vae_weight_norm()
+        
+        # Compile VAE decoder for faster inference
+        logger.info("Compiling VAE decoder with torch.compile (reduce-overhead)")
+        self.vae.decoder = torch.compile(self.vae.decoder, mode="reduce-overhead", fullgraph=False)
+        
         torch.set_default_dtype(torch.bfloat16)
         
         # Warmup all LoRAs for JIT compilation if multi-LoRA mode
         if self.lora_paths is not None and self.use_torch_compile:
             self._warmup_all_loras()
+    
+    def _fuse_vae_weight_norm(self):
+        """Remove weight_norm from VAE modules to fuse weights for inference.
+        
+        weight_norm adds runtime overhead by computing weight = g * v/||v|| each forward.
+        After training, we can fuse g and v into a single weight tensor.
+        """
+        fused_count = 0
+        for module in self.vae.modules():
+            if hasattr(module, 'weight_g') and hasattr(module, 'weight_v'):
+                try:
+                    remove_weight_norm(module)
+                    fused_count += 1
+                except ValueError:
+                    pass  # Module doesn't have weight_norm applied
+        logger.info(f"Fused weight_norm in {fused_count} VAE modules")
     
     def _load_lora_config(self, lora_path: str) -> LoRAConfig:
         """Load LoRA config from a directory containing lora_config.json.
