@@ -225,12 +225,14 @@ class VoxCPMRunner(BaseModelRunner):
     
     @torch.inference_mode()
     def _warmup_vae_batch_sizes(self):
-        """Warmup VAE decoder at various batch sizes to pre-compile torch.compile.
+        """Warmup VAE encoder + decoder at various batch sizes to pre-compile torch.compile.
         
         Without this, first inference at a new batch size triggers recompilation,
         causing TTFB spikes when concurrency changes.
         """
         max_vae_seq_len = self.N_DECODE_PAD_FRAMES + self.patch_size
+        # Encoder input length (audio samples) - 1 second at VAE's sample rate
+        encoder_audio_len = self.vae.sample_rate
         
         # Warmup batch sizes: 1, powers of 2 up to max, and max itself
         warmup_sizes = [1]
@@ -242,16 +244,22 @@ class VoxCPMRunner(BaseModelRunner):
             warmup_sizes.append(self.max_num_seqs)
         warmup_sizes = sorted(warmup_sizes)
         
-        logger.info(f"Warming up VAE decoder for batch sizes: {warmup_sizes}")
+        logger.info(f"Warming up VAE encoder + decoder for batch sizes: {warmup_sizes}")
         
         for bs in warmup_sizes:
-            # Create dummy input: (batch, seq, feat) -> (batch, feat, seq) for decoder
-            dummy_input = torch.randn(
+            # Warmup decoder: (batch, feat, seq)
+            decoder_input = torch.randn(
                 bs, self.feat_dim, max_vae_seq_len,
                 dtype=torch.float32, device="cuda"
             )
-            # Run decoder to trigger compilation for this batch size
-            _ = self.vae.decode(dummy_input)
+            _ = self.vae.decode(decoder_input)
+            
+            # Warmup encoder: (batch, 1, audio_samples)
+            encoder_input = torch.randn(
+                bs, 1, encoder_audio_len,
+                dtype=torch.float32, device="cuda"
+            )
+            _ = self.vae.encoder(encoder_input)
         
         torch.cuda.synchronize()
         logger.info("VAE batch size warmup complete")
