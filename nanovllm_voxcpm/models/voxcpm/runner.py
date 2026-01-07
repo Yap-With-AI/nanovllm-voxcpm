@@ -198,6 +198,9 @@ class VoxCPMRunner(BaseModelRunner):
         )
         logger.info(f"Pre-allocated VAE input buffer: {self._vae_input_buffer.shape}")
         
+        # Warmup VAE at various batch sizes to pre-compile for all shapes
+        self._warmup_vae_batch_sizes()
+        
         torch.set_default_dtype(torch.bfloat16)
         
         # Warmup all LoRAs for JIT compilation if multi-LoRA mode
@@ -219,6 +222,39 @@ class VoxCPMRunner(BaseModelRunner):
                 except ValueError:
                     pass  # Module doesn't have weight_norm applied
         logger.info(f"Fused weight_norm in {fused_count} VAE modules")
+    
+    @torch.inference_mode()
+    def _warmup_vae_batch_sizes(self):
+        """Warmup VAE decoder at various batch sizes to pre-compile torch.compile.
+        
+        Without this, first inference at a new batch size triggers recompilation,
+        causing TTFB spikes when concurrency changes.
+        """
+        max_vae_seq_len = self.N_DECODE_PAD_FRAMES + self.patch_size
+        
+        # Warmup batch sizes: 1, powers of 2 up to max, and max itself
+        warmup_sizes = [1]
+        power = 2
+        while power <= self.max_num_seqs:
+            warmup_sizes.append(power)
+            power *= 2
+        if self.max_num_seqs not in warmup_sizes:
+            warmup_sizes.append(self.max_num_seqs)
+        warmup_sizes = sorted(warmup_sizes)
+        
+        logger.info(f"Warming up VAE decoder for batch sizes: {warmup_sizes}")
+        
+        for bs in warmup_sizes:
+            # Create dummy input: (batch, seq, feat) -> (batch, feat, seq) for decoder
+            dummy_input = torch.randn(
+                bs, self.feat_dim, max_vae_seq_len,
+                dtype=torch.float32, device="cuda"
+            )
+            # Run decoder to trigger compilation for this batch size
+            _ = self.vae.decode(dummy_input)
+        
+        torch.cuda.synchronize()
+        logger.info("VAE batch size warmup complete")
     
     def _load_lora_config(self, lora_path: str) -> LoRAConfig:
         """Load LoRA config from a directory containing lora_config.json.

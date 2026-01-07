@@ -40,8 +40,8 @@ class Config(Generic[T]):
     async_vae: bool = True
     
     # Chunked prefill: split long prefills into chunks to reduce TTFB under concurrency
-    # Set to 0 to disable chunking (process full prefill at once)
-    prefill_chunk_size: int = 256
+    # Smaller = lower TTFB, slightly more scheduling overhead. Set to 0 to disable.
+    prefill_chunk_size: int = 128
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
