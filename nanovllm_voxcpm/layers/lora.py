@@ -151,20 +151,7 @@ class QKVLoRAAdapter(nn.Module):
         Returns:
             Tuple of (delta_q, delta_k, delta_v) to add to base Q, K, V outputs
         """
-        if self.r <= 0 or self.scaling.item() == 0.0:
-            # Return zeros with correct shapes
-            if x.dim() == 2:
-                seq_len = x.size(0)
-            else:
-                seq_len = x.size(0) * x.size(1)
-            device, dtype = x.device, x.dtype
-            return (
-                torch.zeros(seq_len, self.q_output_size, device=device, dtype=dtype),
-                torch.zeros(seq_len, self.kv_output_size, device=device, dtype=dtype),
-                torch.zeros(seq_len, self.kv_output_size, device=device, dtype=dtype),
-            )
-        
-        # Compute LoRA contributions
+        # Compute LoRA contributions (scaling handles enable/disable without CPU sync)
         delta_q = F.linear(F.linear(x, self.q_proj_lora_A), self.q_proj_lora_B)
         delta_k = F.linear(F.linear(x, self.k_proj_lora_A), self.k_proj_lora_B)
         delta_v = F.linear(F.linear(x, self.v_proj_lora_A), self.v_proj_lora_B)
@@ -217,9 +204,7 @@ class OutputLoRAAdapter(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Compute LoRA delta for output projection."""
-        if self.r <= 0 or self.lora_A is None or self.scaling.item() == 0.0:
-            return torch.zeros_like(x[..., :self.output_size])
-        
+        # scaling handles enable/disable without CPU sync
         delta = F.linear(F.linear(x, self.lora_A), self.lora_B)
         return self.dropout(delta) * self.scaling
     
