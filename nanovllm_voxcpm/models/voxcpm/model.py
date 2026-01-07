@@ -567,7 +567,157 @@ class UnifiedCFM(torch.nn.Module):
         t_span = torch.linspace(1, 0, inference_timesteps + 1)
         t_span = t_span + (torch.cos(torch.pi / 2 * t_span) - 1 + t_span)
         self.register_buffer('_t_span_base', t_span, persistent=False)
+        
+        # Pre-compute all t and dt values for each step (deterministic)
+        # These are used to avoid scalar operations in the CUDA graph
+        t_values = []
+        dt_values = []
+        t = t_span[0]
+        for step in range(1, len(t_span)):
+            dt = t - t_span[step]
+            t_values.append(t.item())
+            dt_values.append(dt.item())
+            t = t - dt
+        self.register_buffer('_t_values', torch.tensor(t_values), persistent=False)
+        self.register_buffer('_dt_values', torch.tensor(dt_values), persistent=False)
+        
+        # CUDA graph state (initialized by capture_cuda_graphs)
+        self._euler_graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        self._euler_graph_pool = None
+        self._graph_vars: dict[int, dict] = {}
+        self._graphs_captured = False
 
+    @torch.inference_mode()
+    def capture_cuda_graphs(self, max_batch_size: int, mu_dim: int, dtype: torch.dtype = torch.bfloat16):
+        """Capture CUDA graphs for the Euler solver loop at various batch sizes.
+        
+        This eliminates kernel launch overhead between diffusion timesteps.
+        Call this during model warmup, after torch.compile has warmed up.
+        
+        Args:
+            max_batch_size: Maximum batch size to capture graphs for
+            mu_dim: Dimension of mu (hidden dim from LM)
+            dtype: Data type for tensors
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        device = next(self.parameters()).device
+        seq_len = self.patch_size
+        
+        # Batch sizes to capture: 1, powers of 2, and max
+        batch_sizes = sorted(set([1, 2, 4, 8, 16, 32] + [max_batch_size]))
+        batch_sizes = [bs for bs in batch_sizes if bs <= max_batch_size]
+        
+        logger.info(f"Capturing CUDA graphs for Euler solver at batch sizes: {batch_sizes}")
+        
+        # Move pre-computed values to device
+        t_values = self._t_values.to(device=device, dtype=dtype)
+        dt_values = self._dt_values.to(device=device, dtype=dtype)
+        
+        for bs in reversed(batch_sizes):  # Capture largest first for memory pool
+            logger.info(f"  Capturing Euler graph for batch_size={bs}...")
+            
+            # Allocate graph input buffers
+            graph_vars = {
+                # Inputs (copied before replay)
+                'x': torch.zeros(bs, self.in_channels, seq_len, device=device, dtype=dtype),
+                'mu': torch.zeros(bs, mu_dim, device=device, dtype=dtype),
+                'cond': torch.zeros(bs, self.in_channels, seq_len, device=device, dtype=dtype),
+                'cfg_value': torch.zeros(bs, device=device, dtype=dtype),
+                # Internal buffers (reused during graph execution)
+                'x_in': torch.zeros(2 * bs, self.in_channels, seq_len, device=device, dtype=dtype),
+                'mu_in': torch.zeros(2 * bs, mu_dim, device=device, dtype=dtype),
+                't_in': torch.zeros(2 * bs, device=device, dtype=dtype),
+                'dt_in': torch.zeros(2 * bs, device=device, dtype=dtype),
+                'cond_in': torch.zeros(2 * bs, self.in_channels, seq_len, device=device, dtype=dtype),
+                # Output
+                'output': torch.zeros(bs, self.in_channels, seq_len, device=device, dtype=dtype),
+            }
+            
+            # Warmup run (required before capture)
+            self._run_euler_loop_for_capture(
+                graph_vars, bs, t_values, dt_values
+            )
+            torch.cuda.synchronize()
+            
+            # Capture the graph
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, pool=self._euler_graph_pool):
+                self._run_euler_loop_for_capture(
+                    graph_vars, bs, t_values, dt_values
+                )
+            
+            if self._euler_graph_pool is None:
+                self._euler_graph_pool = graph.pool()
+            
+            self._euler_graphs[bs] = graph
+            self._graph_vars[bs] = graph_vars
+            torch.cuda.synchronize()
+        
+        self._graphs_captured = True
+        logger.info(f"Euler CUDA graph capture complete for {len(batch_sizes)} batch sizes")
+    
+    def _run_euler_loop_for_capture(
+        self,
+        graph_vars: dict,
+        bs: int,
+        t_values: torch.Tensor,
+        dt_values: torch.Tensor,
+    ):
+        """Run the Euler loop for CUDA graph capture.
+        
+        Uses in-place operations where possible for graph compatibility.
+        """
+        x = graph_vars['x']
+        mu = graph_vars['mu']
+        cond = graph_vars['cond']
+        cfg_value = graph_vars['cfg_value']
+        x_in = graph_vars['x_in']
+        mu_in = graph_vars['mu_in']
+        t_in = graph_vars['t_in']
+        dt_in = graph_vars['dt_in']
+        cond_in = graph_vars['cond_in']
+        output = graph_vars['output']
+        
+        # Copy x to working buffer (will be modified in-place)
+        output.copy_(x)
+        
+        # Setup static parts of CFG inputs
+        mu_in[:bs].copy_(mu)
+        mu_in[bs:].zero_()  # Unconditional
+        cond_in[:bs].copy_(cond)
+        cond_in[bs:].copy_(cond)
+        
+        # Run all timesteps
+        for step in range(self.inference_timesteps):
+            t = t_values[step]
+            dt = dt_values[step]
+            
+            # Fill x_in with current x state
+            x_in[:bs].copy_(output)
+            x_in[bs:].copy_(output)
+            t_in.fill_(t)
+            if self.mean_mode:
+                dt_in.fill_(dt)
+            
+            # Run estimator
+            dphi_dt_full = self.estimator(x_in, mu_in, t_in, cond_in, dt_in)
+            dphi_dt = dphi_dt_full[:bs]
+            cfg_dphi_dt = dphi_dt_full[bs:]
+            
+            # Compute CFG guidance scale
+            positive_flat = dphi_dt.view(bs, -1)
+            negative_flat = cfg_dphi_dt.view(bs, -1)
+            dot_product = torch.sum(positive_flat * negative_flat, dim=1, keepdim=True)
+            squared_norm = torch.sum(negative_flat ** 2, dim=1, keepdim=True) + 1e-8
+            st_star = (dot_product / squared_norm).view(bs, 1, 1)
+            
+            # Apply CFG: result = uncond * st_star + cfg * (cond - uncond * st_star)
+            # output = output - dt * (cfg_dphi_dt * st_star + cfg_value[:, None, None] * (dphi_dt - cfg_dphi_dt * st_star))
+            guided = cfg_dphi_dt * st_star + cfg_value[:, None, None] * (dphi_dt - cfg_dphi_dt * st_star)
+            output.sub_(guided * dt)
+    
     def forward(
         self,
         mu: torch.Tensor,
@@ -593,10 +743,36 @@ class UnifiedCFM(torch.nn.Module):
         t = self.patch_size
         z = torch.randn((b, self.in_channels, t), device=mu.device, dtype=mu.dtype) * temperature[:, None, None]
 
-        # Use pre-computed t_span, cast to correct dtype if needed
+        # Use CUDA graph if available for this batch size
+        if self._graphs_captured and b in self._euler_graphs:
+            return self._solve_euler_with_graph(z, mu, cond, cfg_value, b)
+        
+        # Fallback to eager execution
         t_span = self._t_span_base.to(dtype=mu.dtype)
-
         return self.solve_euler(z, t_span=t_span, mu=mu, cond=cond, cfg_value=cfg_value)
+    
+    def _solve_euler_with_graph(
+        self,
+        z: torch.Tensor,
+        mu: torch.Tensor,
+        cond: torch.Tensor,
+        cfg_value: torch.Tensor,
+        bs: int,
+    ) -> torch.Tensor:
+        """Run Euler solver using captured CUDA graph."""
+        graph_vars = self._graph_vars[bs]
+        
+        # Copy inputs into graph buffers
+        graph_vars['x'].copy_(z)
+        graph_vars['mu'].copy_(mu)
+        graph_vars['cond'].copy_(cond)
+        graph_vars['cfg_value'].copy_(cfg_value)
+        
+        # Replay the captured graph
+        self._euler_graphs[bs].replay()
+        
+        # Return output (clone to avoid aliasing issues)
+        return graph_vars['output'].clone()
 
     def optimized_scale(self, positive_flat, negative_flat):
         dot_product = torch.sum(positive_flat * negative_flat, dim=1, keepdim=True)

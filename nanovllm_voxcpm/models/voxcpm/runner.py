@@ -122,6 +122,9 @@ class VoxCPMRunner(BaseModelRunner):
         self.async_vae = getattr(config, 'async_vae', True)
         self._vae_stream = None  # Lazy init after CUDA context is ready
         
+        # Euler (DiT) CUDA graph configuration
+        self.use_euler_cuda_graph = getattr(config, 'use_euler_cuda_graph', True)
+        
         # Multi-LoRA state storage for instant hotswapping
         self._lora_states: dict[str, dict] = {}
         self._current_voice: str | None = None
@@ -175,6 +178,11 @@ class VoxCPMRunner(BaseModelRunner):
                 fullgraph=self.compile_fullgraph,
                 dynamic=self.compile_dynamic,
             )
+        
+        # Warmup DiT and capture CUDA graphs for the Euler solver loop
+        # This must happen AFTER torch.compile (if used) so compiled kernels are captured
+        if self.use_euler_cuda_graph:
+            self._warmup_and_capture_euler_graphs(model_config)
 
         torch.set_default_dtype(torch.float32)
         self.vae = AudioVAE() if model_config.audio_vae_config is None else AudioVAE(**model_config.audio_vae_config.model_dump(mode="dict"))
@@ -263,6 +271,48 @@ class VoxCPMRunner(BaseModelRunner):
         
         torch.cuda.synchronize()
         logger.info("VAE batch size warmup complete")
+    
+    @torch.inference_mode()
+    def _warmup_and_capture_euler_graphs(self, model_config: VoxCPMConfig):
+        """Warmup the DiT and capture CUDA graphs for the Euler solver loop.
+        
+        This eliminates kernel launch overhead between diffusion timesteps.
+        Must be called AFTER torch.compile so compiled kernels are captured in the graph.
+        """
+        logger.info("Warming up DiT for Euler CUDA graph capture...")
+        
+        # Get mu_dim from LM hidden size
+        mu_dim = model_config.dit_config.hidden_dim
+        
+        # Warmup the DiT estimator at various batch sizes first
+        # This ensures torch.compile has generated kernels for all sizes
+        warmup_sizes = sorted(set([1, 2, 4, 8, 16, 32, self.max_num_seqs]))
+        warmup_sizes = [bs for bs in warmup_sizes if bs <= self.max_num_seqs]
+        
+        feat_decoder = self.model.feat_decoder
+        seq_len = self.patch_size
+        
+        for bs in warmup_sizes:
+            # Create dummy inputs matching what forward() generates
+            dummy_mu = torch.randn(bs, mu_dim, device="cuda", dtype=self.dtype)
+            dummy_cond = torch.randn(bs, self.feat_dim, seq_len, device="cuda", dtype=self.dtype)
+            dummy_temp = torch.ones(bs, device="cuda", dtype=self.dtype)
+            dummy_cfg = torch.ones(bs, device="cuda", dtype=self.dtype) * 2.0
+            
+            # Run forward to warmup torch.compile
+            _ = feat_decoder(dummy_mu, dummy_cond, dummy_temp, dummy_cfg)
+        
+        torch.cuda.synchronize()
+        logger.info("DiT warmup complete, capturing Euler CUDA graphs...")
+        
+        # Now capture CUDA graphs for the entire Euler loop
+        feat_decoder.capture_cuda_graphs(
+            max_batch_size=self.max_num_seqs,
+            mu_dim=mu_dim,
+            dtype=self.dtype,
+        )
+        
+        logger.info("Euler CUDA graph capture complete")
     
     def _load_lora_config(self, lora_path: str) -> LoRAConfig:
         """Load LoRA config from a directory containing lora_config.json.

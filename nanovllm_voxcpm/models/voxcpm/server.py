@@ -37,6 +37,8 @@ class VoxCPMServerImpl:
         compile_dynamic: bool = True,
         # Chunked prefill for reduced TTFB
         prefill_chunk_size: int = 128,
+        # CUDA graph for Euler (DiT diffusion) loop
+        use_euler_cuda_graph: bool = True,
     ):
         model_config = VoxCPMConfig.model_validate_json(
             open(os.path.join(model_path, "config.json")).read()
@@ -65,6 +67,8 @@ class VoxCPMServerImpl:
             compile_dynamic=compile_dynamic,
             # Chunked prefill
             prefill_chunk_size=prefill_chunk_size,
+            # Euler CUDA graph
+            use_euler_cuda_graph=use_euler_cuda_graph,
         )
 
         self.llm = VoxCPMEngine(engine_config)
@@ -250,6 +254,8 @@ class AsyncVoxCPMServer:
         compile_dynamic: bool = True,
         # Chunked prefill
         prefill_chunk_size: int = 128,
+        # Euler CUDA graph
+        use_euler_cuda_graph: bool = True,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -273,6 +279,7 @@ class AsyncVoxCPMServer:
                     "compile_fullgraph": compile_fullgraph,
                     "compile_dynamic": compile_dynamic,
                     "prefill_chunk_size": prefill_chunk_size,
+                    "use_euler_cuda_graph": use_euler_cuda_graph,
                 }
             ),
             daemon=True,
@@ -399,6 +406,8 @@ class AsyncVoxCPMServerPool:
         compile_dynamic: bool = True,
         # Chunked prefill
         prefill_chunk_size: int = 128,
+        # Euler CUDA graph
+        use_euler_cuda_graph: bool = True,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -423,6 +432,7 @@ class AsyncVoxCPMServerPool:
                 compile_fullgraph=compile_fullgraph,
                 compile_dynamic=compile_dynamic,
                 prefill_chunk_size=prefill_chunk_size,
+                use_euler_cuda_graph=use_euler_cuda_graph,
             )
             for device_idx in devices
         ]
@@ -516,6 +526,8 @@ class SyncVoxCPMServerPool:
             compile_dynamic: bool = True,
             # Chunked prefill
             prefill_chunk_size: int = 128,
+            # Euler CUDA graph
+            use_euler_cuda_graph: bool = True,
             **kwargs,
         ):
         async def init_async_server_pool():
@@ -537,6 +549,7 @@ class SyncVoxCPMServerPool:
                 compile_fullgraph=compile_fullgraph,
                 compile_dynamic=compile_dynamic,
                 prefill_chunk_size=prefill_chunk_size,
+                use_euler_cuda_graph=use_euler_cuda_graph,
                 **kwargs,
             )
 
