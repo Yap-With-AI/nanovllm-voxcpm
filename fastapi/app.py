@@ -72,6 +72,11 @@ async def lifespan(app: FastAPI):
         # Multi-LoRA hotswapping: load both female and male at startup
         lora_paths=lora_paths,
         default_voice=DEFAULT_VOICE,
+        # torch.compile for DiT estimator: 10-20% TTFB improvement
+        # The estimator runs inference_timesteps (12) times per token - highest ROI target
+        use_torch_compile=True,
+        compile_mode="reduce-overhead",  # Best for latency (uses CUDA graphs internally)
+        compile_targets=["estimator"],   # Only compile the DiT, not the full model
     )
     await global_instances["server"].wait_for_ready()
     
