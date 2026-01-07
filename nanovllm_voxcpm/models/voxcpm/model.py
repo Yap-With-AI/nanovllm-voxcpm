@@ -82,8 +82,9 @@ class MiniCPMLongRoPE(nn.Module):
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
         # Do NOT scale cos/sin amplitude; only frequency is scaled by ext_factors
-        self.register_buffer('cos_cached', emb.cos().to(dtype)* self.scaling_factor, persistent=False)
-        self.register_buffer('sin_cached', emb.sin().to(dtype)* self.scaling_factor, persistent=False)
+        # Store in bfloat16 to avoid dtype conversions during forward pass (torch.compile friendly)
+        self.register_buffer('cos_cached', (emb.cos() * self.scaling_factor).to(torch.bfloat16), persistent=False)
+        self.register_buffer('sin_cached', (emb.sin() * self.scaling_factor).to(torch.bfloat16), persistent=False)
 
     def forward(
         self,
@@ -112,24 +113,24 @@ class MiniCPMLongRoPE(nn.Module):
         return query, key
     
     def _apply_rotary_emb(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
-        """Apply rotary embedding with corrected math matching modeling_minicpm.py"""
-        # x: [num_tokens, num_heads, head_dim]
-        # cos/sin: [num_tokens, head_dim] from _set_cos_sin_cache (already repeated)
+        """Apply rotary embedding in native dtype (bf16) for better performance.
         
+        Staying in bf16 avoids dtype conversion overhead and is more torch.compile friendly.
+        Modern GPUs handle bf16 RoPE with sufficient precision.
+        
+        Args:
+            x: [num_tokens, num_heads, head_dim]
+            cos/sin: [num_tokens, head_dim] from _set_cos_sin_cache (already repeated)
+        """
         cos = cos.unsqueeze(1)  # [num_tokens, 1, head_dim] to broadcast over heads
         sin = sin.unsqueeze(1)  # [num_tokens, 1, head_dim] to broadcast over heads
         
-        orig_dtype = x.dtype
-        x = x.to(torch.float32)
-        cos = cos.to(torch.float32)
-        sin = sin.to(torch.float32)
-        
         # Apply standard RoPE: (x * cos) + (rotate_half(x) * sin)
+        # Stay in native dtype (bf16) - no fp32 conversion needed
         x1, x2 = torch.chunk(x, 2, dim=-1)
         rotate_half_x = torch.cat((-x2, x1), dim=-1)
         
-        result = x * cos + rotate_half_x * sin
-        return result.to(orig_dtype)
+        return x * cos + rotate_half_x * sin
 
 
 def get_cpm4_rope(
