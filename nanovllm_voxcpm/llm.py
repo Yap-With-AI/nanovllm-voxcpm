@@ -28,8 +28,8 @@ class VoxCPM:
     def from_pretrained(
         model: str,
         inference_timesteps : int = 16,
-        max_num_batched_tokens : int = 24576,
-        max_num_seqs : int = 48,
+        max_num_batched_tokens : int = 26624,
+        max_num_seqs : int = 52,
         max_model_len : int = 512,
         gpu_memory_utilization: float = 0.9,
         enforce_eager: bool = False,
