@@ -43,10 +43,6 @@ class Config(Generic[T]):
     # Chunked prefill: split long prefills into chunks to reduce TTFB under concurrency
     # Smaller = lower TTFB, slightly more scheduling overhead. Set to 0 to disable.
     prefill_chunk_size: int = 128
-    
-    # CUDA graph for Euler (DiT diffusion) loop: captures entire diffusion loop as one graph
-    # Eliminates kernel launch overhead between timesteps. Requires enforce_eager=False.
-    use_euler_cuda_graph: bool = True
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
