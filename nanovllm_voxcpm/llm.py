@@ -139,7 +139,7 @@ class VoxCPM:
             compile_opts = dict(
                 use_torch_compile=use_torch_compile,
                 compile_mode=compile_mode,
-                compile_targets=compile_targets if compile_targets is not None else ["estimator"],
+                compile_targets=compile_targets if compile_targets is not None else ["estimator", "lm"],
                 compile_fullgraph=compile_fullgraph,
                 compile_dynamic=compile_dynamic,
             )
