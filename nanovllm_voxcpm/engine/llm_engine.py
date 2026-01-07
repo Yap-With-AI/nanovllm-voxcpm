@@ -20,7 +20,7 @@ class LLMEngineBase:
     scheduler : Scheduler
     
     def __init__(self, RunnerType : type[BaseModelRunner], config: Config, tensor_parallel_size: int):
-        self.prefill_chunk_size = getattr(config, 'prefill_chunk_size', 256)
+        self.prefill_chunk_size = getattr(config, 'prefill_chunk_size', 64)
         self.distributed_port = get_distributed_port()
 
         if config.devices is None or len(config.devices) == 0:

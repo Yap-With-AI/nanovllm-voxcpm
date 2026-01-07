@@ -42,7 +42,7 @@ class Config(Generic[T]):
     
     # Chunked prefill: split long prefills into chunks to reduce TTFB under concurrency
     # Smaller = lower TTFB, slightly more scheduling overhead. Set to 0 to disable.
-    prefill_chunk_size: int = 128
+    prefill_chunk_size: int = 64
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
