@@ -129,16 +129,6 @@ class VoxCPMRunner(BaseModelRunner):
         # Pre-allocated buffer for VAE decode (initialized in init_model after CUDA ready)
         self._vae_input_buffer: torch.Tensor | None = None
         
-        # Pre-allocated pinned memory buffers for fast CPU->GPU transfers
-        # These are allocated in init_model after we know the sizes
-        self._pinned_text_tokens: torch.Tensor | None = None
-        self._pinned_feats: torch.Tensor | None = None
-        self._pinned_feat_masks: torch.Tensor | None = None
-        self._pinned_padding_decode: torch.Tensor | None = None
-        
-        # Data preparation stream for overlapping input preparation with GPU compute
-        self._data_stream: torch.cuda.Stream | None = None
-        
         super().__init__(config, rank, device_idx, distributed_port, event)
     
     @property
@@ -207,22 +197,6 @@ class VoxCPMRunner(BaseModelRunner):
             dtype=torch.float32, device="cuda"
         )
         logger.info(f"Pre-allocated VAE input buffer: {self._vae_input_buffer.shape}")
-        
-        # Pre-allocate pinned memory buffers for fast async CPU->GPU transfers
-        # Size based on max batch size * max sequence length
-        # NOTE: Must explicitly set device="cpu" since default device may be "cuda"
-        max_tokens = self._config.max_num_batched_tokens
-        self._pinned_text_tokens = torch.empty(max_tokens, dtype=torch.int64, device="cpu", pin_memory=True)
-        self._pinned_feats = torch.empty(max_tokens, self.patch_size, self.feat_dim, dtype=torch.float32, device="cpu", pin_memory=True)
-        self._pinned_feat_masks = torch.empty(max_tokens, dtype=torch.bool, device="cpu", pin_memory=True)
-        self._pinned_padding_decode = torch.empty(
-            self.max_num_seqs, self.N_DECODE_PAD_FRAMES, self.feat_dim, 
-            dtype=torch.float32, device="cpu", pin_memory=True
-        )
-        logger.info(f"Pre-allocated pinned buffers: text_tokens={self._pinned_text_tokens.shape}, feats={self._pinned_feats.shape}")
-        
-        # Data preparation stream for overlapping transfers with compute
-        self._data_stream = torch.cuda.Stream()
         
         # Warmup VAE at various batch sizes to pre-compile for all shapes
         self._warmup_vae_batch_sizes()
@@ -464,80 +438,50 @@ class VoxCPMRunner(BaseModelRunner):
             "positions": positions,
         }
 
-        # Collect payload data and compute total token count
-        text_tokens_list = []
-        feats_list = []
-        feat_masks_list = []
+        text_tokens = []
+        feats = []
+        feat_masks = []
         temperatures = []
         cfg_values = []
-        total_tokens = 0
 
         for seq in seqs:
             payload: VoxCPMPayload = seq.custom_payload
             assert payload.text_tokens.shape[0] == payload.feats.shape[0]
             assert payload.text_tokens.shape[0] == payload.feat_masks.shape[0]
 
-            text_tokens_list.append(payload.text_tokens)
-            feats_list.append(payload.feats)
-            feat_masks_list.append(payload.feat_masks)
-            total_tokens += payload.text_tokens.shape[0]
+            text_tokens.append(payload.text_tokens)
+            feats.append(payload.feats)
+            feat_masks.append(payload.feat_masks)
 
             temperatures.append(payload.temperature)
             cfg_values.append(payload.cfg_value)
         
-        # Concatenate numpy arrays
-        text_tokens_np = np.concatenate(text_tokens_list, axis=0)
-        feats_np = np.concatenate(feats_list, axis=0)
-        feat_masks_np = np.concatenate(feat_masks_list, axis=0)
-        
-        # Copy into pre-allocated pinned buffers (faster than creating new pinned tensors)
-        # Use slices to only copy what we need
-        self._pinned_text_tokens[:total_tokens].copy_(torch.from_numpy(text_tokens_np))
-        self._pinned_feats[:total_tokens].copy_(torch.from_numpy(feats_np))
-        self._pinned_feat_masks[:total_tokens].copy_(torch.from_numpy(feat_masks_np))
-        
-        # Async transfer to GPU using data stream (overlaps with any pending GPU work)
-        with torch.cuda.stream(self._data_stream):
-            inputs["text_tokens"] = self._pinned_text_tokens[:total_tokens].cuda(non_blocking=True)
-            inputs["feat"] = self._pinned_feats[:total_tokens].to(device="cuda", dtype=self.dtype, non_blocking=True)
-            inputs["feat_mask"] = self._pinned_feat_masks[:total_tokens].cuda(non_blocking=True)
-            inputs["temperature"] = torch.tensor(temperatures, dtype=self.dtype, device="cuda")
-            inputs["cfg_value"] = torch.tensor(cfg_values, dtype=self.dtype, device="cuda")
-        
-        # Main stream waits for data transfers to complete
-        torch.cuda.current_stream().wait_stream(self._data_stream)
+        inputs["text_tokens"] = torch.from_numpy(np.concatenate(text_tokens, axis=0)).cuda(non_blocking=True)
+        inputs["feat"] = torch.from_numpy(np.concatenate(feats, axis=0)).cuda(non_blocking=True).to(self.dtype)
+        inputs["feat_mask"] = torch.from_numpy(np.concatenate(feat_masks, axis=0)).cuda(non_blocking=True)
+        inputs["temperature"] = torch.tensor(temperatures, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True).to(self.dtype)
+        inputs["cfg_value"] = torch.tensor(cfg_values, dtype=torch.float32, pin_memory=True).cuda(non_blocking=True).to(self.dtype)
         
         outputs = self.run_model(inputs, is_prefill)
 
         latents = outputs["latents"]
 
-        batch_size = len(seqs)
         pad_lengths = []
-        
-        # Collect padding decode data and copy to pinned buffer
-        for i in range(batch_size):
-            padding = seqs[i].custom_payload.padding_decode
-            if padding is not None:
-                pad_len = padding.shape[0]
-                pad_lengths.append(pad_len)
-                # Copy to pinned buffer for fast transfer
-                self._pinned_padding_decode[i, :pad_len].copy_(torch.from_numpy(padding))
+        for i in range(len(seqs)):
+            if seqs[i].custom_payload.padding_decode is not None:
+                pad_lengths.append(seqs[i].custom_payload.padding_decode.shape[0])
             else:
                 pad_lengths.append(0)
-        
         max_pad_decode = max(pad_lengths) + self.patch_size
+        batch_size = len(seqs)
 
-        # Use pre-allocated GPU buffer (slice to actual size needed)
+        # Use pre-allocated buffer (slice to actual size needed)
         vae_decoder_inputs = self._vae_input_buffer[:batch_size, :max_pad_decode]
         vae_decoder_inputs.zero_()  # Clear previous data
-        
-        # Batch transfer padding data from pinned memory
         for i in range(batch_size):
             pad_len = pad_lengths[i]
             if pad_len > 0:
-                vae_decoder_inputs[i, :pad_len].copy_(
-                    self._pinned_padding_decode[i, :pad_len].cuda(non_blocking=True)
-                )
+                vae_decoder_inputs[i, :pad_len] = torch.from_numpy(seqs[i].custom_payload.padding_decode).cuda(non_blocking=True)
             vae_decoder_inputs[i, pad_len:pad_len+self.patch_size] = latents[i].to(torch.float32)
         
         if self.async_vae:
