@@ -31,7 +31,7 @@ class VoxCPMServerImpl:
         default_voice : str = "female",
         # torch.compile options
         use_torch_compile: bool = False,
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "max-autotune",
         compile_targets: List[str] | None = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
@@ -244,7 +244,7 @@ class AsyncVoxCPMServer:
         default_voice : str = "female",
         # torch.compile options
         use_torch_compile: bool = False,
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "max-autotune",
         compile_targets: List[str] | None = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
@@ -393,7 +393,7 @@ class AsyncVoxCPMServerPool:
         default_voice : str = "female",
         # torch.compile options
         use_torch_compile: bool = False,
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "max-autotune",
         compile_targets: List[str] | None = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
@@ -510,7 +510,7 @@ class SyncVoxCPMServerPool:
             default_voice : str = "female",
             # torch.compile options
             use_torch_compile: bool = False,
-            compile_mode: str = "reduce-overhead",
+            compile_mode: str = "max-autotune",
             compile_targets: List[str] | None = None,
             compile_fullgraph: bool = False,
             compile_dynamic: bool = True,

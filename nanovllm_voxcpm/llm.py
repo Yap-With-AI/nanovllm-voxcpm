@@ -40,7 +40,7 @@ class VoxCPM:
         default_voice: str = "female",
         # torch.compile options for improved performance
         use_torch_compile: bool = False,
-        compile_mode: str = "reduce-overhead",
+        compile_mode: str = "max-autotune",
         compile_targets: Optional[List[str]] = None,
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
