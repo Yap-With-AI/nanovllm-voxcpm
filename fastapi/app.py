@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from nanovllm_voxcpm import VoxCPM
+from nanovllm_voxcpm.models.voxcpm.server import ConnectionLimitExceeded
 import base64
 import os
 from pydantic import BaseModel
@@ -95,10 +96,14 @@ async def health():
     server = global_instances.get("server")
     sample_rate = getattr(server, "sample_rate", None)
     available_voices = await server.get_available_voices() if server else []
+    active_connections = getattr(server, "active_connections", None)
+    max_connections = getattr(server, "max_concurrent_connections", None)
     return {
         "status": "ok",
         "sample_rate": sample_rate,
         "available_voices": available_voices,
+        "active_connections": active_connections,
+        "max_concurrent_connections": max_connections,
     }
 
 
@@ -147,23 +152,34 @@ async def numpy_to_bytes(gen) :
     async for data in gen:
         yield data.tobytes()
 
+
 @app.post("/generate")
 async def generate(request: GenerateRequest):
     server = global_instances["server"]
     sample_rate = getattr(server, "sample_rate", None)
-    return StreamingResponse(
-        numpy_to_bytes(
-            server.generate(
-                target_text=request.target_text,
-                prompt_latents=None,
-                prompt_text="",
-                prompt_id=request.prompt_id,
-                max_generate_length=request.max_generate_length,
-                temperature=request.temperature,
-                cfg_value=request.cfg_value,
-                voice=request.voice,
+    
+    # Check connection limit before starting
+    if hasattr(server, 'active_connections') and hasattr(server, 'max_concurrent_connections'):
+        if server.active_connections >= server.max_concurrent_connections:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Server has reached maximum concurrent connections ({server.max_concurrent_connections}). Please try again later.",
+                headers={"Retry-After": "5"},
             )
-        ),
+    
+    gen = server.generate(
+        target_text=request.target_text,
+        prompt_latents=None,
+        prompt_text="",
+        prompt_id=request.prompt_id,
+        max_generate_length=request.max_generate_length,
+        temperature=request.temperature,
+        cfg_value=request.cfg_value,
+        voice=request.voice,
+    )
+    
+    return StreamingResponse(
+        numpy_to_bytes(gen),
         media_type="audio/raw",
         headers={
             "X-Sample-Rate": str(sample_rate) if sample_rate else "",

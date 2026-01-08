@@ -377,6 +377,11 @@ class AsyncVoxCPMServer:
             del self.stream_table[seq_id]
 
 
+class ConnectionLimitExceeded(Exception):
+    """Raised when the server has reached its maximum concurrent connections."""
+    pass
+
+
 class AsyncVoxCPMServerPool:
     def __init__(self,
         model_path : str,
@@ -399,10 +404,17 @@ class AsyncVoxCPMServerPool:
         compile_dynamic: bool = True,
         # Chunked prefill
         prefill_chunk_size: int = 32,
+        # Connection limiting (separate from max_num_seqs which controls batching)
+        max_concurrent_connections: int = 104,
         **kwargs,
     ):
         if len(kwargs) > 0:
             raise ValueError(f"Unknown kwargs: {kwargs}")
+
+        # Semaphore to limit concurrent streaming connections
+        self._connection_semaphore = asyncio.Semaphore(max_concurrent_connections)
+        self._max_concurrent_connections = max_concurrent_connections
+        self._active_connections = 0
 
         self.servers = [
             AsyncVoxCPMServer(
@@ -430,6 +442,16 @@ class AsyncVoxCPMServerPool:
         self.servers_load = np.zeros(len(self.servers), dtype=np.int32)
 
         self._prompt_pool = {}
+
+    @property
+    def active_connections(self) -> int:
+        """Return the number of currently active streaming connections."""
+        return self._active_connections
+    
+    @property
+    def max_concurrent_connections(self) -> int:
+        """Return the maximum number of concurrent connections allowed."""
+        return self._max_concurrent_connections
 
     async def wait_for_ready(self):
         await asyncio.gather(*[server.wait_for_ready() for server in self.servers])
@@ -471,28 +493,45 @@ class AsyncVoxCPMServerPool:
         cfg_value : float = 2.0,
         voice : str | None = None
     ):
-        if prompt_id is not None:
-            if prompt_id not in self._prompt_pool:
-                raise ValueError(f"Prompt with id {prompt_id} not found")
-            if prompt_latents is not None:
-                raise ValueError("Prompt latents and prompt id cannot be provided at the same time")
-            if len(prompt_text) > 0:
-                raise ValueError("Prompt text and prompt id cannot be provided at the same time")
-
-            prompt_info = self._prompt_pool[prompt_id]
-            prompt_latents = prompt_info["latents"]
-            prompt_text = prompt_info["text"]
-
-        min_load_server_idx = np.argmin(self.servers_load)
-        self.servers_load[min_load_server_idx] += 1
-
-        server = self.servers[min_load_server_idx]
-
+        # Check if semaphore is at capacity (non-blocking check)
+        # locked() returns True when semaphore value is 0 (all slots taken)
+        if self._connection_semaphore.locked():
+            raise ConnectionLimitExceeded(
+                f"Server has reached maximum concurrent connections ({self._max_concurrent_connections}). "
+                "Please try again later."
+            )
+        
+        # Acquire semaphore slot - should succeed immediately since we checked locked()
+        # No await between check and acquire ensures no race condition in async context
+        await self._connection_semaphore.acquire()
+        self._active_connections += 1
+        
         try:
-            async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value, voice):
-                yield data
+            if prompt_id is not None:
+                if prompt_id not in self._prompt_pool:
+                    raise ValueError(f"Prompt with id {prompt_id} not found")
+                if prompt_latents is not None:
+                    raise ValueError("Prompt latents and prompt id cannot be provided at the same time")
+                if len(prompt_text) > 0:
+                    raise ValueError("Prompt text and prompt id cannot be provided at the same time")
+
+                prompt_info = self._prompt_pool[prompt_id]
+                prompt_latents = prompt_info["latents"]
+                prompt_text = prompt_info["text"]
+
+            min_load_server_idx = np.argmin(self.servers_load)
+            self.servers_load[min_load_server_idx] += 1
+
+            server = self.servers[min_load_server_idx]
+
+            try:
+                async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value, voice):
+                    yield data
+            finally:
+                self.servers_load[min_load_server_idx] -= 1
         finally:
-            self.servers_load[min_load_server_idx] -= 1
+            self._active_connections -= 1
+            self._connection_semaphore.release()
 
 class SyncVoxCPMServerPool:
     def __init__(self, 
@@ -516,6 +555,8 @@ class SyncVoxCPMServerPool:
             compile_dynamic: bool = True,
             # Chunked prefill
             prefill_chunk_size: int = 32,
+            # Connection limiting (separate from max_num_seqs which controls batching)
+            max_concurrent_connections: int = 104,
             **kwargs,
         ):
         async def init_async_server_pool():
@@ -537,6 +578,7 @@ class SyncVoxCPMServerPool:
                 compile_fullgraph=compile_fullgraph,
                 compile_dynamic=compile_dynamic,
                 prefill_chunk_size=prefill_chunk_size,
+                max_concurrent_connections=max_concurrent_connections,
                 **kwargs,
             )
 

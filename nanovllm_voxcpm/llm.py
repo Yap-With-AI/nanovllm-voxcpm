@@ -46,6 +46,8 @@ class VoxCPM:
         compile_dynamic: bool = True,
         # Chunked prefill for reduced TTFB under concurrency
         prefill_chunk_size: int = 64,
+        # Connection limiting (separate from max_num_seqs which controls inference batching)
+        max_concurrent_connections: int = 104,
         **kwargs,
     ):
         """Load VoxCPM model from pretrained weights.
@@ -73,6 +75,9 @@ class VoxCPM:
             compile_dynamic: Use dynamic shapes (recommended for variable batch sizes). Default: True
             prefill_chunk_size: Tokens per prefill chunk. Smaller = lower TTFB, slightly lower throughput.
                                Set to 0 to disable chunking. Default: 256
+            max_concurrent_connections: Maximum number of concurrent streaming connections allowed.
+                                       This is separate from max_num_seqs which controls inference batching.
+                                       Connections beyond this limit will be rejected. Default: 104
             **kwargs: Additional arguments
         
         Returns:
@@ -158,6 +163,7 @@ class VoxCPM:
                     lora_paths=resolved_lora_paths,
                     default_voice=default_voice,
                     prefill_chunk_size=prefill_chunk_size,
+                    max_concurrent_connections=max_concurrent_connections,
                     **compile_opts,
                     **kwargs,
                 )
@@ -175,6 +181,7 @@ class VoxCPM:
                     lora_paths=resolved_lora_paths,
                     default_voice=default_voice,
                     prefill_chunk_size=prefill_chunk_size,
+                    max_concurrent_connections=max_concurrent_connections,
                     **compile_opts,
                     **kwargs,
                 )
