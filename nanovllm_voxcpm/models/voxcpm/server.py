@@ -214,12 +214,14 @@ def main_loop(
 
             # update output
             for seq in output:
-                latest_waveform = seq.custom_payload.generated_waveforms[-1]
-                queue_out.put({
-                    "type": "stream",
-                    "id": seq.seq_id,
-                    "data": latest_waveform,
-                })
+                # Only send waveforms if there are any (prefill chunks don't generate audio)
+                if seq.custom_payload.generated_waveforms:
+                    latest_waveform = seq.custom_payload.generated_waveforms[-1]
+                    queue_out.put({
+                        "type": "stream",
+                        "id": seq.seq_id,
+                        "data": latest_waveform,
+                    })
                 if seq.is_finished:
                     queue_out.put({
                         "type": "stream",
