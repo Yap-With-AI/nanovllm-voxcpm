@@ -63,10 +63,10 @@ async def lifespan(app: FastAPI):
     
     global_instances["server"] = VoxCPM.from_pretrained(
         model=model_path,
-        max_num_batched_tokens=24576,  # 512 * 48 for max batch capacity
-        max_num_seqs=48,               # Max concurrent sequences
-        max_model_len=512,             # 60 input + 375 audio (15s) + buffer
-        gpu_memory_utilization=0.92,   # Slightly higher GPU use for batching
+        max_num_batched_tokens=23296,  # 52 * 448
+        max_num_seqs=52,               # Max concurrent sequences
+        max_model_len=448,             # 60 input + 375 audio (~15s)
+        gpu_memory_utilization=0.93,   # Higher GPU use for KV cache
         enforce_eager=False,
         devices=[0],
         # Multi-LoRA hotswapping: load both female and male at startup

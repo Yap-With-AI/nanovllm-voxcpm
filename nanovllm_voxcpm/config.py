@@ -8,13 +8,13 @@ T = TypeVar("T", bound=BaseModel)
 @dataclass
 class Config(Generic[T]):
     model: str
-    max_num_batched_tokens: int = 24576
-    max_num_seqs: int = 48
-    max_model_len: int = 512
-    gpu_memory_utilization: float = 0.9
+    max_num_batched_tokens: int = 23296  # 52 * 448
+    max_num_seqs: int = 52
+    max_model_len: int = 448
+    gpu_memory_utilization: float = 0.93
     tensor_parallel_size: int = 1
     enforce_eager: bool = False
-    kvcache_block_size: int = 256
+    kvcache_block_size: int = 128
     num_kvcache_blocks: int = -1
 
     model_config: T | None = None
@@ -42,11 +42,11 @@ class Config(Generic[T]):
     
     # Chunked prefill: split long prefills into chunks to reduce TTFB under concurrency
     # Smaller = lower TTFB, slightly more scheduling overhead. Set to 0 to disable.
-    prefill_chunk_size: int = 64
+    prefill_chunk_size: int = 48
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
-        assert self.kvcache_block_size % 256 == 0
+        assert self.kvcache_block_size % 64 == 0  # Must be multiple of 64 for alignment
         assert 1 <= self.tensor_parallel_size <= 8
         assert self.max_num_batched_tokens >= self.max_model_len
         if self.lora_path is not None:
