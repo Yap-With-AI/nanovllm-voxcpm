@@ -14,7 +14,7 @@ class Config(Generic[T]):
     gpu_memory_utilization: float = 0.93
     tensor_parallel_size: int = 1
     enforce_eager: bool = False
-    kvcache_block_size: int = 128
+    kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
 
     model_config: T | None = None
@@ -46,7 +46,7 @@ class Config(Generic[T]):
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
-        assert self.kvcache_block_size % 64 == 0  # Must be multiple of 64 for alignment
+        assert self.kvcache_block_size % 256 == 0  # Flash Attention paged KV cache requires 256
         assert 1 <= self.tensor_parallel_size <= 8
         assert self.max_num_batched_tokens >= self.max_model_len
         if self.lora_path is not None:
