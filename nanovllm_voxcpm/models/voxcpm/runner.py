@@ -507,12 +507,12 @@ class VoxCPMRunner(BaseModelRunner):
             stop_flag = outputs["stop_flag"].cpu().tolist()
             np_latents = latents.to(torch.float32).cpu().numpy()
             
-            # Now sync VAE and transfer results to CPU
+            # Now sync VAE and transfer results to CPU (convert bf16 -> fp32 for numpy)
             vae_event.synchronize()
-            vae_decoder_outputs = vae_decoder_outputs_gpu.cpu().numpy()
+            vae_decoder_outputs = vae_decoder_outputs_gpu.float().cpu().numpy()
         else:
-            # Synchronous VAE decode (original behavior)
-            vae_decoder_outputs = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :].cpu().numpy()
+            # Synchronous VAE decode (original behavior, convert bf16 -> fp32 for numpy)
+            vae_decoder_outputs = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :].float().cpu().numpy()
             stop_flag = outputs["stop_flag"].cpu().tolist()
             np_latents = latents.to(torch.float32).cpu().numpy()
 
