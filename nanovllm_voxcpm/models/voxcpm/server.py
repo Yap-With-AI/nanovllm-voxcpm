@@ -1,5 +1,6 @@
 from nanovllm_voxcpm.models.voxcpm.engine import VoxCPMEngine, VoxCPMConfig, Config
 import os
+import time
 import torch.multiprocessing as mp
 from queue import Empty
 import traceback
@@ -588,6 +589,11 @@ class AsyncVoxCPMServerPool:
             # ============================================================
             # LEVEL 2: Inference queue (wait until slot available or cancelled)
             # ============================================================
+            
+            # Check if we'll have to wait (semaphore locked = all slots taken)
+            was_queued = self._inference_semaphore.locked()
+            queue_start_time = time.monotonic()
+            
             self._queued_inference += 1
             
             # Create cancellation event for this request
@@ -631,8 +637,19 @@ class AsyncVoxCPMServerPool:
                 # Remove from pending cancellations - no longer in queue
                 self._pending_cancellations.pop(request_id, None)
             
+            # Calculate actual queue wait time
+            queue_wait_ms = (time.monotonic() - queue_start_time) * 1000
+            
             # Got inference slot - now running on GPU
             self._active_inference += 1
+            
+            # Yield metadata as first item (dict with queue info)
+            yield {
+                "_metadata": True,
+                "request_id": request_id,
+                "was_queued": was_queued,
+                "queue_wait_ms": queue_wait_ms,
+            }
             
             try:
                 # Select server with lowest load

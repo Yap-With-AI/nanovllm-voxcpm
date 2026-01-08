@@ -281,14 +281,24 @@ async def generate(request: GenerateRequest):
         request_id=request_id,
     )
     
-    # Wrap generator to handle cancellation during streaming
-    async def streaming_with_error_handling():
+    # Wrap generator to handle metadata and cancellation
+    # First yield from server is metadata dict, rest is audio
+    async def streaming_with_metadata():
         try:
+            first = True
             async for data in gen:
-                yield data.tobytes()
+                if first and isinstance(data, dict) and data.get("_metadata"):
+                    # First item is metadata - encode as JSON bytes with delimiter
+                    import json
+                    metadata_json = json.dumps(data) + "\n"
+                    yield metadata_json.encode("utf-8")
+                    first = False
+                else:
+                    # Audio data
+                    yield data.tobytes()
+                    first = False
         except RequestCancelled:
             # Request was cancelled while waiting in queue
-            # Stream ends cleanly - client can check X-Request-Id to correlate
             return
     
     # Current queue status for debugging
@@ -297,13 +307,14 @@ async def generate(request: GenerateRequest):
         queue_status = f"queue={server.queued_inference},active={server.active_inference}"
     
     return StreamingResponse(
-        streaming_with_error_handling(),
-        media_type="audio/raw",
+        streaming_with_metadata(),
+        media_type="application/octet-stream",  # Mixed content: JSON metadata + raw audio
         headers={
             "X-Sample-Rate": str(sample_rate) if sample_rate else "",
             "X-Dtype": "float32",
             "X-Voice": request.voice or DEFAULT_VOICE,
-            "X-Request-Id": request_id,  # Client can use this to cancel
+            "X-Request-Id": request_id,
             "X-Queue-Status": queue_status,
+            "X-Has-Metadata": "true",  # Signal that first line is JSON metadata
         },
     )

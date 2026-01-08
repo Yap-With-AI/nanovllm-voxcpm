@@ -5,6 +5,7 @@ Measures: TTFB, RTF, XRT, P50/P90/P95 latencies, throughput
 
 import asyncio
 import time
+import json
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List
@@ -21,15 +22,16 @@ class RequestMetrics:
     
     # Timing
     start_time: float = 0.0
-    first_chunk_time: float = 0.0
+    first_chunk_time: float = 0.0  # Time of first AUDIO chunk (after metadata)
     end_time: float = 0.0
     
     # Audio
     audio_samples: int = 0
     chunk_count: int = 0
     
-    # Queue status (set during analysis)
+    # Queue status (from server metadata)
     was_queued: bool = False
+    queue_wait_ms: float = 0.0  # Actual queue wait time from server
     
     @property
     def ttfb(self) -> float:
@@ -73,26 +75,6 @@ class BenchmarkResults:
     def add(self, metric: RequestMetrics):
         self.metrics.append(metric)
     
-    def classify_queued_requests(self):
-        """Classify requests as immediate vs queued based on TTFB distribution.
-        
-        Uses a threshold: requests with TTFB > 2x the minimum are considered queued.
-        This works because immediate requests cluster around baseline TTFB,
-        while queued requests have additional wait time.
-        """
-        if not self.metrics:
-            return
-        
-        ttfbs = [m.ttfb for m in self.metrics]
-        min_ttfb = min(ttfbs)
-        
-        # Threshold: 2x minimum TTFB indicates queuing
-        # (immediate requests should be within ~1.5x of each other)
-        queue_threshold = min_ttfb * 2.0
-        
-        for m in self.metrics:
-            m.was_queued = m.ttfb > queue_threshold
-    
     @property
     def immediate_metrics(self) -> List[RequestMetrics]:
         """Requests that got immediate GPU slots (didn't queue)"""
@@ -108,16 +90,18 @@ class BenchmarkResults:
             return 0.0
         return float(np.percentile(values, p))
     
-    def _compute_ttfb_stats(self, metrics_list: List[RequestMetrics]) -> dict:
+    def _compute_ttfb_stats(self, metrics_list: List[RequestMetrics], include_queue_wait: bool = False) -> dict:
         """Compute TTFB statistics for a list of metrics"""
         if not metrics_list:
             return {
                 "count": 0,
                 "p50": 0, "p90": 0, "p95": 0,
                 "mean": 0, "min": 0, "max": 0,
+                "queue_wait_mean": 0, "queue_wait_max": 0,
             }
         ttfbs = [m.ttfb for m in metrics_list]
-        return {
+        queue_waits = [m.queue_wait_ms for m in metrics_list]
+        result = {
             "count": len(metrics_list),
             "p50": self.percentile(ttfbs, 50),
             "p90": self.percentile(ttfbs, 90),
@@ -126,6 +110,10 @@ class BenchmarkResults:
             "min": min(ttfbs),
             "max": max(ttfbs),
         }
+        if include_queue_wait:
+            result["queue_wait_mean"] = np.mean(queue_waits)
+            result["queue_wait_max"] = max(queue_waits)
+        return result
     
     def summary(self) -> dict:
         ttfbs = [m.ttfb for m in self.metrics]
@@ -136,9 +124,6 @@ class BenchmarkResults:
         
         total_audio = sum(audio_durations)
         wall_time = self.total_end_time - self.total_start_time
-        
-        # Classify requests if not already done
-        self.classify_queued_requests()
         
         return {
             "requests": len(self.metrics),
@@ -156,7 +141,7 @@ class BenchmarkResults:
             
             # TTFB stats separated by queue status
             "ttfb_immediate": self._compute_ttfb_stats(self.immediate_metrics),
-            "ttfb_queued": self._compute_ttfb_stats(self.queued_metrics),
+            "ttfb_queued": self._compute_ttfb_stats(self.queued_metrics, include_queue_wait=True),
             
             # Total latency stats
             "latency_p50": self.percentile(total_times, 50),
@@ -218,6 +203,8 @@ class BenchmarkResults:
             print(f"  Mean:   {que['mean']*1000:>8.1f} ms")
             print(f"  Min:    {que['min']*1000:>8.1f} ms")
             print(f"  Max:    {que['max']*1000:>8.1f} ms")
+            print(f"  Queue Wait (mean): {que.get('queue_wait_mean', 0):>5.0f} ms")
+            print(f"  Queue Wait (max):  {que.get('queue_wait_max', 0):>5.0f} ms")
         else:
             print(f"  (no requests were queued)")
         
@@ -297,7 +284,9 @@ async def run_single_request(
         voice=voice,
     )
     
-    first_chunk_received = False
+    first_audio_chunk_received = False
+    metadata_parsed = False
+    pending_data = b""  # Buffer for parsing metadata line
 
     # Start timing RIGHT BEFORE sending the request (not including handshake)
     metrics.start_time = time.perf_counter()
@@ -316,9 +305,36 @@ async def run_single_request(
         response.raise_for_status()
         
         async for chunk in response.aiter_bytes():
-            if not first_chunk_received:
+            # First chunk contains JSON metadata line followed by audio
+            if not metadata_parsed:
+                pending_data += chunk
+                # Look for newline delimiter
+                if b"\n" in pending_data:
+                    metadata_line, audio_data = pending_data.split(b"\n", 1)
+                    try:
+                        metadata = json.loads(metadata_line.decode("utf-8"))
+                        metrics.was_queued = metadata.get("was_queued", False)
+                        metrics.queue_wait_ms = metadata.get("queue_wait_ms", 0.0)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        # If parsing fails, treat whole thing as audio
+                        audio_data = pending_data
+                    
+                    metadata_parsed = True
+                    pending_data = b""
+                    
+                    # Process remaining audio data
+                    if audio_data:
+                        if not first_audio_chunk_received:
+                            metrics.first_chunk_time = time.perf_counter()
+                            first_audio_chunk_received = True
+                        metrics.audio_samples += len(audio_data) // 4
+                        metrics.chunk_count += 1
+                continue
+            
+            # Regular audio chunk
+            if not first_audio_chunk_received:
                 metrics.first_chunk_time = time.perf_counter()
-                first_chunk_received = True
+                first_audio_chunk_received = True
             
             # Each chunk is raw float32 audio
             metrics.audio_samples += len(chunk) // 4
@@ -436,13 +452,11 @@ async def run_benchmark(
             
             for m in batch_metrics:
                 results.add(m)
-            
-            # Classify and print after adding all metrics from batch
-            results.classify_queued_requests()
-            for m in batch_metrics:
+                # Queue status now comes directly from server
                 queue_indicator = "⏳" if m.was_queued else "⚡"
+                queue_info = f" (waited {m.queue_wait_ms:.0f}ms)" if m.was_queued else ""
                 print(f"  {queue_indicator} Request {m.request_id + 1} [{m.voice}]: "
-                      f"TTFB={m.ttfb*1000:.0f}ms, "
+                      f"TTFB={m.ttfb*1000:.0f}ms{queue_info}, "
                       f"Total={m.total_time:.2f}s, "
                       f"Audio={m.audio_duration:.2f}s, "
                       f"RTF={m.rtf:.3f}x")
