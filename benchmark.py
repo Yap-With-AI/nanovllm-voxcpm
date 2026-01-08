@@ -28,6 +28,9 @@ class RequestMetrics:
     audio_samples: int = 0
     chunk_count: int = 0
     
+    # Queue status (set during analysis)
+    was_queued: bool = False
+    
     @property
     def ttfb(self) -> float:
         """Time to first byte (seconds)"""
@@ -65,14 +68,64 @@ class BenchmarkResults:
     total_start_time: float = 0.0
     total_end_time: float = 0.0
     concurrency: int = 0
+    max_inference_slots: int = 52  # From server /health
     
     def add(self, metric: RequestMetrics):
         self.metrics.append(metric)
+    
+    def classify_queued_requests(self):
+        """Classify requests as immediate vs queued based on TTFB distribution.
+        
+        Uses a threshold: requests with TTFB > 2x the minimum are considered queued.
+        This works because immediate requests cluster around baseline TTFB,
+        while queued requests have additional wait time.
+        """
+        if not self.metrics:
+            return
+        
+        ttfbs = [m.ttfb for m in self.metrics]
+        min_ttfb = min(ttfbs)
+        
+        # Threshold: 2x minimum TTFB indicates queuing
+        # (immediate requests should be within ~1.5x of each other)
+        queue_threshold = min_ttfb * 2.0
+        
+        for m in self.metrics:
+            m.was_queued = m.ttfb > queue_threshold
+    
+    @property
+    def immediate_metrics(self) -> List[RequestMetrics]:
+        """Requests that got immediate GPU slots (didn't queue)"""
+        return [m for m in self.metrics if not m.was_queued]
+    
+    @property
+    def queued_metrics(self) -> List[RequestMetrics]:
+        """Requests that had to wait in queue"""
+        return [m for m in self.metrics if m.was_queued]
     
     def percentile(self, values: List[float], p: float) -> float:
         if not values:
             return 0.0
         return float(np.percentile(values, p))
+    
+    def _compute_ttfb_stats(self, metrics_list: List[RequestMetrics]) -> dict:
+        """Compute TTFB statistics for a list of metrics"""
+        if not metrics_list:
+            return {
+                "count": 0,
+                "p50": 0, "p90": 0, "p95": 0,
+                "mean": 0, "min": 0, "max": 0,
+            }
+        ttfbs = [m.ttfb for m in metrics_list]
+        return {
+            "count": len(metrics_list),
+            "p50": self.percentile(ttfbs, 50),
+            "p90": self.percentile(ttfbs, 90),
+            "p95": self.percentile(ttfbs, 95),
+            "mean": np.mean(ttfbs),
+            "min": min(ttfbs),
+            "max": max(ttfbs),
+        }
     
     def summary(self) -> dict:
         ttfbs = [m.ttfb for m in self.metrics]
@@ -84,18 +137,26 @@ class BenchmarkResults:
         total_audio = sum(audio_durations)
         wall_time = self.total_end_time - self.total_start_time
         
+        # Classify requests if not already done
+        self.classify_queued_requests()
+        
         return {
             "requests": len(self.metrics),
             "concurrency": self.concurrency,
+            "max_inference_slots": self.max_inference_slots,
             "wall_time_sec": wall_time,
             
-            # TTFB stats
+            # TTFB stats (all requests)
             "ttfb_p50": self.percentile(ttfbs, 50),
             "ttfb_p90": self.percentile(ttfbs, 90),
             "ttfb_p95": self.percentile(ttfbs, 95),
             "ttfb_mean": np.mean(ttfbs) if ttfbs else 0,
             "ttfb_min": min(ttfbs) if ttfbs else 0,
             "ttfb_max": max(ttfbs) if ttfbs else 0,
+            
+            # TTFB stats separated by queue status
+            "ttfb_immediate": self._compute_ttfb_stats(self.immediate_metrics),
+            "ttfb_queued": self._compute_ttfb_stats(self.queued_metrics),
             
             # Total latency stats
             "latency_p50": self.percentile(total_times, 50),
@@ -131,9 +192,36 @@ class BenchmarkResults:
         print(f"\n{'CONFIGURATION':-^60}")
         print(f"  Total Requests:      {s['requests']}")
         print(f"  Concurrency:         {s['concurrency']}")
+        print(f"  Max Inference Slots: {s['max_inference_slots']}")
         print(f"  Wall Clock Time:     {s['wall_time_sec']:.2f}s")
         
-        print(f"\n{'TIME TO FIRST BYTE (TTFB)':-^60}")
+        # Separated TTFB stats
+        imm = s['ttfb_immediate']
+        que = s['ttfb_queued']
+        
+        print(f"\n{'TTFB - IMMEDIATE (fit in batch)':-^60}")
+        print(f"  Count:  {imm['count']:>8}")
+        if imm['count'] > 0:
+            print(f"  P50:    {imm['p50']*1000:>8.1f} ms")
+            print(f"  P90:    {imm['p90']*1000:>8.1f} ms")
+            print(f"  P95:    {imm['p95']*1000:>8.1f} ms")
+            print(f"  Mean:   {imm['mean']*1000:>8.1f} ms")
+            print(f"  Min:    {imm['min']*1000:>8.1f} ms")
+            print(f"  Max:    {imm['max']*1000:>8.1f} ms")
+        
+        print(f"\n{'TTFB - QUEUED (had to wait)':-^60}")
+        print(f"  Count:  {que['count']:>8}")
+        if que['count'] > 0:
+            print(f"  P50:    {que['p50']*1000:>8.1f} ms")
+            print(f"  P90:    {que['p90']*1000:>8.1f} ms")
+            print(f"  P95:    {que['p95']*1000:>8.1f} ms")
+            print(f"  Mean:   {que['mean']*1000:>8.1f} ms")
+            print(f"  Min:    {que['min']*1000:>8.1f} ms")
+            print(f"  Max:    {que['max']*1000:>8.1f} ms")
+        else:
+            print(f"  (no requests were queued)")
+        
+        print(f"\n{'TTFB - ALL REQUESTS':-^60}")
         print(f"  P50:    {s['ttfb_p50']*1000:>8.1f} ms")
         print(f"  P90:    {s['ttfb_p90']*1000:>8.1f} ms")
         print(f"  P95:    {s['ttfb_p95']*1000:>8.1f} ms")
@@ -288,17 +376,19 @@ async def run_benchmark(
     texts: List[str] = None,
     warm_connections: bool = True,
     alternate_voices: bool = True,
+    max_inference_slots: int = 52,
 ) -> BenchmarkResults:
     """Run the full benchmark
     
     Args:
         alternate_voices: If True, alternate between male (even) and female (odd) voices
+        max_inference_slots: Server's max_inference_slots (from /health) for queue analysis
     """
     
     if texts is None:
         texts = SAMPLE_TEXTS
     
-    results = BenchmarkResults(concurrency=concurrency)
+    results = BenchmarkResults(concurrency=concurrency, max_inference_slots=max_inference_slots)
     
     async with httpx.AsyncClient(timeout=300) as client:
         # Warm connections: send one full batch to establish connections, then discard metrics
@@ -346,7 +436,12 @@ async def run_benchmark(
             
             for m in batch_metrics:
                 results.add(m)
-                print(f"  Request {m.request_id + 1} [{m.voice}]: "
+            
+            # Classify and print after adding all metrics from batch
+            results.classify_queued_requests()
+            for m in batch_metrics:
+                queue_indicator = "⏳" if m.was_queued else "⚡"
+                print(f"  {queue_indicator} Request {m.request_id + 1} [{m.voice}]: "
                       f"TTFB={m.ttfb*1000:.0f}ms, "
                       f"Total={m.total_time:.2f}s, "
                       f"Audio={m.audio_duration:.2f}s, "
@@ -363,14 +458,19 @@ async def run_benchmark(
 async def main_async(args):
     print(f"Connecting to server at {args.server}...")
     
-    # Check server health and available voices
+    # Check server health and get configuration
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(f"{args.server}/health", timeout=5)
             resp.raise_for_status()
             health_data = resp.json()
             available_voices = health_data.get("available_voices", [])
+            max_inference_slots = health_data.get("max_inference_slots", 52)
+            active_inference = health_data.get("active_inference", 0)
+            queued_inference = health_data.get("queued_inference", 0)
             print(f"Available voices: {available_voices}")
+            print(f"Max inference slots: {max_inference_slots}")
+            print(f"Current load: {active_inference} active, {queued_inference} queued")
         except Exception as e:
             print(f"ERROR: Cannot connect to server at {args.server}")
             print(f"Make sure the FastAPI server is running:")
@@ -390,12 +490,19 @@ async def main_async(args):
             temperature=args.temperature,
             cfg_value=args.cfg_value,
             alternate_voices=args.alternate_voices,
+            max_inference_slots=max_inference_slots,
         )
         print("Warmup complete.\n")
     
     # Run benchmark
     voice_mode = "alternating male/female" if args.alternate_voices else "female only"
     print(f"Starting benchmark: {args.num_requests} requests, concurrency={args.concurrency}, voice={voice_mode}")
+    
+    if args.concurrency > max_inference_slots:
+        overflow = args.concurrency - max_inference_slots
+        print(f"⚠️  Concurrency ({args.concurrency}) > max_inference_slots ({max_inference_slots})")
+        print(f"   {overflow} requests will queue - expect higher TTFB for queued requests\n")
+    
     results = await run_benchmark(
         args.server,
         num_requests=args.num_requests,
@@ -405,6 +512,7 @@ async def main_async(args):
         cfg_value=args.cfg_value,
         warm_connections=not args.no_warm_connections,
         alternate_voices=args.alternate_voices,
+        max_inference_slots=max_inference_slots,
     )
     
     results.print_report()
