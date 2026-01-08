@@ -72,13 +72,11 @@ async def lifespan(app: FastAPI):
         # Multi-LoRA hotswapping: load both female and male at startup
         lora_paths=lora_paths,
         default_voice=DEFAULT_VOICE,
-        # torch.compile for major compute paths: 10-30% TTFB improvement
-        # - estimator: DiT runs inference_timesteps times per token (highest ROI)
-        # - lm: base language model (most parameters)
-        # - residual_lm: residual acoustic language model
+        # torch.compile for DiT estimator: 10-20% TTFB improvement
+        # The estimator runs inference_timesteps (12) times per token - highest ROI target
         use_torch_compile=True,
         compile_mode="max-autotune-no-cudagraphs",  # Avoids conflict with nanovllm's CUDA graph capture
-        compile_targets=["estimator", "lm", "residual_lm"],
+        compile_targets=["estimator"],   # Only compile the DiT, not the full model
     )
     await global_instances["server"].wait_for_ready()
     
