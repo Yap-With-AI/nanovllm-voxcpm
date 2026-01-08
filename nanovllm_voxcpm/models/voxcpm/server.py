@@ -19,7 +19,7 @@ def gen_uuid() -> str:
 class VoxCPMServerImpl:
     def __init__(self,
         model_path : str,
-        inference_timesteps : int = 12,
+        inference_timesteps : int = 20,
         max_num_batched_tokens : int = 23296,  # 52 * 448
         max_num_seqs : int = 52,
         max_model_len : int = 448,
@@ -232,7 +232,7 @@ def main_loop(
 class AsyncVoxCPMServer:
     def __init__(self,
         model_path : str,
-        inference_timesteps : int = 12,
+        inference_timesteps : int = 20,
         max_num_batched_tokens : int = 23296,  # 52 * 448
         max_num_seqs : int = 52,
         max_model_len : int = 448,
@@ -391,7 +391,7 @@ class RequestCancelled(Exception):
 class AsyncVoxCPMServerPool:
     def __init__(self,
         model_path : str,
-        inference_timesteps : int = 12,
+        inference_timesteps : int = 20,
         max_num_batched_tokens : int = 23296,  # 52 * 448
         max_num_seqs : int = 52,
         max_model_len : int = 448,
@@ -676,7 +676,7 @@ class AsyncVoxCPMServerPool:
 class SyncVoxCPMServerPool:
     def __init__(self, 
             model_path : str,
-            inference_timesteps : int = 12,
+            inference_timesteps : int = 20,
             max_num_batched_tokens : int = 23296,  # 52 * 448
             max_num_seqs : int = 52,
             max_model_len : int = 448,
