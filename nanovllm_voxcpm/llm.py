@@ -45,7 +45,7 @@ class VoxCPM:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill for reduced TTFB under concurrency
-        prefill_chunk_size: int = 32,
+        prefill_chunk_size: int = 64,
         **kwargs,
     ):
         """Load VoxCPM model from pretrained weights.

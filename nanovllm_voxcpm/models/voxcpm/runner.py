@@ -185,11 +185,6 @@ class VoxCPMRunner(BaseModelRunner):
         # Fuse weight_norm for inference (removes runtime overhead)
         self._fuse_vae_weight_norm()
         
-        # Convert VAE decoder to bfloat16 for memory savings (~50% less VRAM for decoder)
-        # Encoder stays fp32 for encoding quality, decoder can use bf16 for generation
-        self.vae.decoder = self.vae.decoder.to(torch.bfloat16)
-        logger.info("VAE decoder converted to bfloat16 for memory optimization")
-        
         # Compile VAE encoder and decoder for faster inference
         # Use "reduce-overhead" for VAE - avoids noisy autotuning errors and works well for inference
         vae_compile_mode = "reduce-overhead"
@@ -198,13 +193,12 @@ class VoxCPMRunner(BaseModelRunner):
         self.vae.decoder = torch.compile(self.vae.decoder, mode=vae_compile_mode, fullgraph=False)
         
         # Pre-allocate VAE input buffer (avoids per-step allocation)
-        # Use bfloat16 to match decoder dtype for zero-copy decode
         max_vae_seq_len = self.N_DECODE_PAD_FRAMES + self.patch_size
         self._vae_input_buffer = torch.empty(
             self.max_num_seqs, max_vae_seq_len, self.feat_dim,
-            dtype=torch.bfloat16, device="cuda"
+            dtype=torch.float32, device="cuda"
         )
-        logger.info(f"Pre-allocated VAE input buffer: {self._vae_input_buffer.shape} (bfloat16)")
+        logger.info(f"Pre-allocated VAE input buffer: {self._vae_input_buffer.shape}")
         
         # Warmup VAE at various batch sizes to pre-compile for all shapes
         self._warmup_vae_batch_sizes()
@@ -255,14 +249,14 @@ class VoxCPMRunner(BaseModelRunner):
         logger.info(f"Warming up VAE encoder + decoder for batch sizes: {warmup_sizes}")
         
         for bs in warmup_sizes:
-            # Warmup decoder: (batch, feat, seq) - use bf16 to match decoder dtype
+            # Warmup decoder: (batch, feat, seq)
             decoder_input = torch.randn(
                 bs, self.feat_dim, max_vae_seq_len,
-                dtype=torch.bfloat16, device="cuda"
+                dtype=torch.float32, device="cuda"
             )
             _ = self.vae.decode(decoder_input)
             
-            # Warmup encoder: (batch, 1, audio_samples) - stays fp32
+            # Warmup encoder: (batch, 1, audio_samples)
             encoder_input = torch.randn(
                 bs, 1, encoder_audio_len,
                 dtype=torch.float32, device="cuda"
@@ -489,8 +483,8 @@ class VoxCPMRunner(BaseModelRunner):
         for i in range(batch_size):
             pad_len = pad_lengths[i]
             if pad_len > 0:
-                vae_decoder_inputs[i, :pad_len] = torch.from_numpy(seqs[i].custom_payload.padding_decode).to(torch.bfloat16).cuda(non_blocking=True)
-            vae_decoder_inputs[i, pad_len:pad_len+self.patch_size] = latents[i]  # Already bf16 from model
+                vae_decoder_inputs[i, :pad_len] = torch.from_numpy(seqs[i].custom_payload.padding_decode).cuda(non_blocking=True)
+            vae_decoder_inputs[i, pad_len:pad_len+self.patch_size] = latents[i].to(torch.float32)
         
         if self.async_vae:
             # Async VAE: run VAE decode on separate stream, overlap with CPU operations
@@ -507,12 +501,12 @@ class VoxCPMRunner(BaseModelRunner):
             stop_flag = outputs["stop_flag"].cpu().tolist()
             np_latents = latents.to(torch.float32).cpu().numpy()
             
-            # Now sync VAE and transfer results to CPU (convert bf16 -> fp32 for numpy)
+            # Now sync VAE and transfer results to CPU
             vae_event.synchronize()
-            vae_decoder_outputs = vae_decoder_outputs_gpu.float().cpu().numpy()
+            vae_decoder_outputs = vae_decoder_outputs_gpu.cpu().numpy()
         else:
-            # Synchronous VAE decode (original behavior, convert bf16 -> fp32 for numpy)
-            vae_decoder_outputs = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :].float().cpu().numpy()
+            # Synchronous VAE decode (original behavior)
+            vae_decoder_outputs = self.vae.decode(vae_decoder_inputs.permute(0, 2, 1))[:, 0, :].cpu().numpy()
             stop_flag = outputs["stop_flag"].cpu().tolist()
             np_latents = latents.to(torch.float32).cpu().numpy()
 

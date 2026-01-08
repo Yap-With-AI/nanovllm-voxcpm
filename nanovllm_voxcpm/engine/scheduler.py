@@ -21,7 +21,7 @@ class Scheduler:
     def __init__(self, config: Config):
         self.max_num_seqs = config.max_num_seqs
         self.max_num_batched_tokens = config.max_num_batched_tokens
-        self.prefill_chunk_size = getattr(config, 'prefill_chunk_size', 32)
+        self.prefill_chunk_size = getattr(config, 'prefill_chunk_size', 256)
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size)
         
         # Sequence queues by state

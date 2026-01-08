@@ -36,7 +36,7 @@ class VoxCPMServerImpl:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill for reduced TTFB
-        prefill_chunk_size: int = 32,
+        prefill_chunk_size: int = 64,
     ):
         model_config = VoxCPMConfig.model_validate_json(
             open(os.path.join(model_path, "config.json")).read()
@@ -214,14 +214,12 @@ def main_loop(
 
             # update output
             for seq in output:
-                # Only send waveforms if there are any (prefill chunks don't generate audio)
-                if seq.custom_payload.generated_waveforms:
-                    latest_waveform = seq.custom_payload.generated_waveforms[-1]
-                    queue_out.put({
-                        "type": "stream",
-                        "id": seq.seq_id,
-                        "data": latest_waveform,
-                    })
+                latest_waveform = seq.custom_payload.generated_waveforms[-1]
+                queue_out.put({
+                    "type": "stream",
+                    "id": seq.seq_id,
+                    "data": latest_waveform,
+                })
                 if seq.is_finished:
                     queue_out.put({
                         "type": "stream",
@@ -251,7 +249,7 @@ class AsyncVoxCPMServer:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill
-        prefill_chunk_size: int = 32,
+        prefill_chunk_size: int = 64,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -400,7 +398,7 @@ class AsyncVoxCPMServerPool:
         compile_fullgraph: bool = False,
         compile_dynamic: bool = True,
         # Chunked prefill
-        prefill_chunk_size: int = 32,
+        prefill_chunk_size: int = 64,
         **kwargs,
     ):
         if len(kwargs) > 0:
@@ -517,7 +515,7 @@ class SyncVoxCPMServerPool:
             compile_fullgraph: bool = False,
             compile_dynamic: bool = True,
             # Chunked prefill
-            prefill_chunk_size: int = 32,
+            prefill_chunk_size: int = 64,
             **kwargs,
         ):
         async def init_async_server_pool():
