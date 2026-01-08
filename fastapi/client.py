@@ -15,6 +15,12 @@ async def tts_request(session: aiohttp.ClientSession, server: str, text: str, te
         sample_rate = int(sample_rate_str) if sample_rate_str else 44100
         dtype = response.headers.get("X-Dtype", "float32")
         raw = await response.content.read()
+        
+        # Server sends JSON metadata on first line, then audio
+        # Skip metadata line if present
+        if response.headers.get("X-Has-Metadata") == "true" and b"\n" in raw[:500]:
+            _, raw = raw.split(b"\n", 1)
+        
         audio = np.frombuffer(raw, dtype=np.dtype(dtype))
         return audio, sample_rate
 

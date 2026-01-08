@@ -51,8 +51,11 @@ def main(args):
             response.raise_for_status()
             
             # Each chunk is raw float32 audio samples
+            # First line is JSON metadata (if X-Has-Metadata header is set)
             buffer = b""
             chunk_size = 4 * 2560  # 2560 float32 samples = ~160ms of audio
+            metadata_skipped = False
+            has_metadata = response.headers.get("X-Has-Metadata") == "true"
             
             for data in response.iter_bytes():
                 if first_chunk_time is None:
@@ -61,6 +64,19 @@ def main(args):
                     print(f"  TTFB: {ttfb:.0f}ms")
 
                 buffer += data
+                
+                # Skip JSON metadata line on first chunk
+                if has_metadata and not metadata_skipped and b"\n" in buffer:
+                    metadata_line, buffer = buffer.split(b"\n", 1)
+                    metadata_skipped = True
+                    # Optionally parse metadata
+                    try:
+                        import json
+                        meta = json.loads(metadata_line.decode("utf-8"))
+                        if meta.get("was_queued"):
+                            print(f"  Queue wait: {meta.get('queue_wait_ms', 0):.0f}ms")
+                    except:
+                        pass
                 
                 while len(buffer) >= chunk_size:
                     chunk_bytes = buffer[:chunk_size]
