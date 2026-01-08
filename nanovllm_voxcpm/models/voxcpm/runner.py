@@ -186,9 +186,11 @@ class VoxCPMRunner(BaseModelRunner):
         self._fuse_vae_weight_norm()
         
         # Compile VAE encoder and decoder for faster inference
-        logger.info(f"Compiling VAE encoder + decoder with torch.compile ({self.compile_mode})")
-        self.vae.encoder = torch.compile(self.vae.encoder, mode=self.compile_mode, fullgraph=False)
-        self.vae.decoder = torch.compile(self.vae.decoder, mode=self.compile_mode, fullgraph=False)
+        # Use "reduce-overhead" for VAE - avoids noisy autotuning errors and works well for inference
+        vae_compile_mode = "reduce-overhead"
+        logger.info(f"Compiling VAE encoder + decoder with torch.compile ({vae_compile_mode})")
+        self.vae.encoder = torch.compile(self.vae.encoder, mode=vae_compile_mode, fullgraph=False)
+        self.vae.decoder = torch.compile(self.vae.decoder, mode=vae_compile_mode, fullgraph=False)
         
         # Pre-allocate VAE input buffer (avoids per-step allocation)
         max_vae_seq_len = self.N_DECODE_PAD_FRAMES + self.patch_size
