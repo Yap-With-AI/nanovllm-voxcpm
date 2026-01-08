@@ -590,8 +590,7 @@ class AsyncVoxCPMServerPool:
             # LEVEL 2: Inference queue (wait until slot available or cancelled)
             # ============================================================
             
-            # Check if we'll have to wait (semaphore locked = all slots taken)
-            was_queued = self._inference_semaphore.locked()
+            # Track time to determine if we actually had to wait
             queue_start_time = time.monotonic()
             
             self._queued_inference += 1
@@ -639,6 +638,11 @@ class AsyncVoxCPMServerPool:
             
             # Calculate actual queue wait time
             queue_wait_ms = (time.monotonic() - queue_start_time) * 1000
+            
+            # Determine if we were queued based on actual wait time
+            # If we waited more than 50ms, we were definitely queued
+            # (immediate acquires take <1ms typically)
+            was_queued = queue_wait_ms > 50.0
             
             # Got inference slot - now running on GPU
             self._active_inference += 1

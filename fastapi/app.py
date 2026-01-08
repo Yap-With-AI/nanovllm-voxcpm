@@ -16,7 +16,7 @@ app = FastAPI()
 #   - model.safetensors, tokenizer files at root (base model)
 #   - lora/female/ (female voice LoRA)
 #   - lora/male/ (male voice LoRA)
-MODEL_REPO = "yapwithai/vox-1.5-orpheus-distil"
+MODEL_REPO = "yapwithai/voxcpm-1.5-orpheus-distilled"
 DEFAULT_VOICE = "female"  # Default voice
 
 global_instances = {}

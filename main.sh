@@ -166,7 +166,7 @@ python3 -c "
 from huggingface_hub import snapshot_download
 import os
 
-model_repo = 'yapwithai/vox-1.5-orpheus-distil'
+model_repo = 'yapwithai/voxcpm-1.5-orpheus-distilled'
 print(f'Downloading model: {model_repo}...')
 print('(This is a private repo - using HF_TOKEN for authentication)')
 
