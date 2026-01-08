@@ -23,6 +23,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Enable TensorCore-accelerated matmuls for faster FP32 operations (VAE uses FP32)
+# 'high' uses TF32 on Ampere+ GPUs which is ~3x faster than full FP32 with negligible precision loss
+torch.set_float32_matmul_precision('high')
+
 
 def _apply_torch_compile(
     model: VoxCPMModel,
@@ -208,6 +212,11 @@ class VoxCPMRunner(BaseModelRunner):
         # Warmup all LoRAs for JIT compilation if multi-LoRA mode
         if self.lora_paths is not None and self.use_torch_compile:
             self._warmup_all_loras()
+        
+        # Log optimization status
+        logger.info(f"TensorCore acceleration: enabled (TF32 precision for FP32 matmuls)")
+        if not self._config.enforce_eager:
+            logger.info(f"CUDA graphs: enabled (decode steps will use graph replay)")
     
     def _fuse_vae_weight_norm(self):
         """Remove weight_norm from VAE modules to fuse weights for inference.
