@@ -209,6 +209,10 @@ class VoxCPMRunner(BaseModelRunner):
         
         torch.set_default_dtype(torch.bfloat16)
         
+        # Warmup DiT estimator at various batch sizes (critical for avoiding recompilation spikes!)
+        # This is the main source of "needs 4 runs to warm up" - torch.compile recompiles on new batch sizes
+        self._warmup_dit_batch_sizes()
+        
         # Warmup all LoRAs for JIT compilation if multi-LoRA mode
         if self.lora_paths is not None and self.use_torch_compile:
             self._warmup_all_loras()
@@ -274,6 +278,64 @@ class VoxCPMRunner(BaseModelRunner):
         
         torch.cuda.synchronize()
         logger.info("VAE batch size warmup complete")
+    
+    @torch.inference_mode()
+    def _warmup_dit_batch_sizes(self):
+        """Warmup DiT estimator at various batch sizes to pre-compile torch.compile.
+        
+        Without this, max-autotune mode triggers recompilation on new batch sizes,
+        causing massive TTFB spikes (800-1100ms) until all sizes are compiled.
+        This is the main source of "needs 4 runs to warm up" behavior.
+        """
+        if not self.use_torch_compile or "estimator" not in self.compile_targets:
+            logger.info("DiT warmup skipped (not using torch.compile for estimator)")
+            return
+        
+        # Warmup batch sizes: 1, powers of 2 up to max, and max itself
+        warmup_sizes = [1]
+        power = 2
+        while power <= self.max_num_seqs:
+            warmup_sizes.append(power)
+            power *= 2
+        if self.max_num_seqs not in warmup_sizes:
+            warmup_sizes.append(self.max_num_seqs)
+        warmup_sizes = sorted(warmup_sizes)
+        
+        logger.info(f"Warming up DiT estimator for batch sizes: {warmup_sizes} (this may take a minute...)")
+        
+        # Get model dimensions from config
+        dit_hidden_dim = self._config.model_config.dit_config.hidden_dim
+        
+        for bs in warmup_sizes:
+            # Create dummy inputs matching real inference shapes
+            # mu: (batch, dit_hidden_dim) - conditioning from LM projection
+            mu = torch.randn(bs, dit_hidden_dim, dtype=self.dtype, device="cuda")
+            
+            # cond: (batch, feat_dim, patch_size) - prefix features transposed
+            cond = torch.randn(bs, self.feat_dim, self.patch_size, dtype=self.dtype, device="cuda")
+            
+            # temperature/cfg_value: (batch,)
+            temperature = torch.ones(bs, dtype=self.dtype, device="cuda")
+            cfg_value = torch.full((bs,), 2.0, dtype=self.dtype, device="cuda")
+            
+            # Run DiT forward to trigger compilation
+            _ = self.model.feat_decoder(
+                mu=mu,
+                cond=cond,
+                temperature=temperature,
+                cfg_value=cfg_value,
+            )
+            
+            # Also run a second time to ensure autotuning settles
+            _ = self.model.feat_decoder(
+                mu=mu,
+                cond=cond,
+                temperature=temperature,
+                cfg_value=cfg_value,
+            )
+        
+        torch.cuda.synchronize()
+        logger.info("DiT batch size warmup complete")
     
     def _load_lora_config(self, lora_path: str) -> LoRAConfig:
         """Load LoRA config from a directory containing lora_config.json.
