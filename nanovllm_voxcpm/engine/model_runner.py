@@ -204,11 +204,22 @@ class BaseModelRunner:
             if not seq.block_table:    # warmup
                 continue
             for i in range(seq.num_cached_blocks, seq.num_blocks):
-                start = seq.block_table[i] * self.block_size
-                if i != seq.num_blocks - 1:
-                    end = start + self.block_size
+                block_start = seq.block_table[i] * self.block_size
+                
+                # Calculate token range within this block that we're processing
+                if i == seq.num_cached_blocks:
+                    # First block: start from cached offset within block
+                    offset_in_block = seq.num_cached_tokens % self.block_size
                 else:
-                    end = start + seq.last_block_num_tokens 
+                    offset_in_block = 0
+                
+                if i != seq.num_blocks - 1:
+                    tokens_in_block = self.block_size
+                else:
+                    tokens_in_block = seq.last_block_num_tokens
+                
+                start = block_start + offset_in_block
+                end = block_start + tokens_in_block
                 slot_mapping.extend(list(range(start, end)))
         if cu_seqlens_k[-1] > cu_seqlens_q[-1]:    # prefix cache
             block_tables = self.prepare_block_tables(seqs)
