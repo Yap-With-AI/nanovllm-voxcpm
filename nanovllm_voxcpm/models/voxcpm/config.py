@@ -95,7 +95,7 @@ class VoxCPMConfig(BaseModel):
     device: str = "cuda"
     dtype: str = "bfloat16"
 
-    inference_timesteps: int = 16
+    inference_timesteps: int = 12
     
     # LoRA configuration (optional)
     lora_config: Optional[LoRAConfig] = None
