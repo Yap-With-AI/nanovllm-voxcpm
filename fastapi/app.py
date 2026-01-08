@@ -2,11 +2,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from nanovllm_voxcpm import VoxCPM
-from nanovllm_voxcpm.models.voxcpm.server import ConnectionLimitExceeded
+from nanovllm_voxcpm.models.voxcpm.server import ConnectionLimitExceeded, RequestCancelled
 import base64
 import os
+import uuid
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 app = FastAPI()
 
@@ -96,14 +97,27 @@ async def health():
     server = global_instances.get("server")
     sample_rate = getattr(server, "sample_rate", None)
     available_voices = await server.get_available_voices() if server else []
+    
+    # Connection stats (Level 1: hard limit)
     active_connections = getattr(server, "active_connections", None)
     max_connections = getattr(server, "max_concurrent_connections", None)
+    
+    # Inference queue stats (Level 2: GPU batch capacity)
+    active_inference = getattr(server, "active_inference", None)
+    queued_inference = getattr(server, "queued_inference", None)
+    max_inference_slots = getattr(server, "max_inference_slots", None)
+    
     return {
         "status": "ok",
         "sample_rate": sample_rate,
         "available_voices": available_voices,
+        # Connection layer
         "active_connections": active_connections,
         "max_concurrent_connections": max_connections,
+        # Inference layer
+        "active_inference": active_inference,
+        "queued_inference": queued_inference,
+        "max_inference_slots": max_inference_slots,
     }
 
 
@@ -114,6 +128,89 @@ async def list_voices() -> List[str]:
     if server:
         return await server.get_available_voices()
     return []
+
+
+@app.get("/status")
+async def status():
+    """Get detailed server status including queue depth - useful for load balancers."""
+    server = global_instances.get("server")
+    if not server:
+        return {"status": "not_ready"}
+    
+    active_connections = getattr(server, "active_connections", 0)
+    max_connections = getattr(server, "max_concurrent_connections", 0)
+    active_inference = getattr(server, "active_inference", 0)
+    queued_inference = getattr(server, "queued_inference", 0)
+    max_inference_slots = getattr(server, "max_inference_slots", 0)
+    
+    # Calculate capacity percentages
+    connection_utilization = (active_connections / max_connections * 100) if max_connections > 0 else 0
+    inference_utilization = (active_inference / max_inference_slots * 100) if max_inference_slots > 0 else 0
+    
+    # Determine if server can accept new requests
+    can_accept = active_connections < max_connections
+    
+    return {
+        "status": "ready" if can_accept else "at_capacity",
+        "can_accept_requests": can_accept,
+        "connections": {
+            "active": active_connections,
+            "max": max_connections,
+            "utilization_pct": round(connection_utilization, 1),
+        },
+        "inference": {
+            "active": active_inference,
+            "queued": queued_inference,
+            "max_slots": max_inference_slots,
+            "utilization_pct": round(inference_utilization, 1),
+        },
+    }
+
+
+@app.get("/queue")
+async def get_queue():
+    """Get list of request IDs currently waiting in queue."""
+    server = global_instances.get("server")
+    if not server:
+        return {"pending_requests": []}
+    
+    pending_ids = getattr(server, "pending_request_ids", [])
+    queued_count = getattr(server, "queued_inference", 0)
+    
+    return {
+        "pending_requests": pending_ids,
+        "queue_depth": queued_count,
+    }
+
+
+class CancelRequest(BaseModel):
+    request_id: str
+
+
+@app.post("/cancel")
+async def cancel_request(request: CancelRequest):
+    """Cancel a pending (queued) request. Only works for requests still waiting, not running."""
+    server = global_instances.get("server")
+    if not server:
+        raise HTTPException(status_code=503, detail="Server not ready")
+    
+    # Check if request is pending
+    if hasattr(server, 'is_request_pending') and not server.is_request_pending(request.request_id):
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Request {request.request_id} not found in queue. It may have already started processing or completed."
+        )
+    
+    # Cancel the request
+    if hasattr(server, 'cancel_pending_request'):
+        cancelled = server.cancel_pending_request(request.request_id)
+        if cancelled:
+            return {"status": "cancelled", "request_id": request.request_id}
+    
+    raise HTTPException(
+        status_code=404,
+        detail=f"Request {request.request_id} could not be cancelled."
+    )
 
 
 class AddPromptRequest(BaseModel):
@@ -146,6 +243,7 @@ class GenerateRequest(BaseModel):
     temperature : float = 1.0
     cfg_value : float = 2.0
     voice : str | None = None  # Voice selection: "female" or "male" (default: female)
+    request_id : str | None = None  # Optional client-provided request ID for cancellation
 
 
 async def numpy_to_bytes(gen) :
@@ -158,7 +256,10 @@ async def generate(request: GenerateRequest):
     server = global_instances["server"]
     sample_rate = getattr(server, "sample_rate", None)
     
-    # Check connection limit before starting
+    # Generate request_id if not provided by client
+    request_id = request.request_id or str(uuid.uuid4())
+    
+    # Check connection limit (Level 1: hard reject)
     if hasattr(server, 'active_connections') and hasattr(server, 'max_concurrent_connections'):
         if server.active_connections >= server.max_concurrent_connections:
             raise HTTPException(
@@ -167,6 +268,7 @@ async def generate(request: GenerateRequest):
                 headers={"Retry-After": "5"},
             )
     
+    # Create generator - queuing happens inside when iteration starts
     gen = server.generate(
         target_text=request.target_text,
         prompt_latents=None,
@@ -176,14 +278,32 @@ async def generate(request: GenerateRequest):
         temperature=request.temperature,
         cfg_value=request.cfg_value,
         voice=request.voice,
+        request_id=request_id,
     )
     
+    # Wrap generator to handle cancellation during streaming
+    async def streaming_with_error_handling():
+        try:
+            async for data in gen:
+                yield data.tobytes()
+        except RequestCancelled:
+            # Request was cancelled while waiting in queue
+            # Stream ends cleanly - client can check X-Request-Id to correlate
+            return
+    
+    # Current queue status for debugging
+    queue_status = ""
+    if hasattr(server, 'queued_inference') and hasattr(server, 'active_inference'):
+        queue_status = f"queue={server.queued_inference},active={server.active_inference}"
+    
     return StreamingResponse(
-        numpy_to_bytes(gen),
+        streaming_with_error_handling(),
         media_type="audio/raw",
         headers={
             "X-Sample-Rate": str(sample_rate) if sample_rate else "",
             "X-Dtype": "float32",
             "X-Voice": request.voice or DEFAULT_VOICE,
+            "X-Request-Id": request_id,  # Client can use this to cancel
+            "X-Queue-Status": queue_status,
         },
     )

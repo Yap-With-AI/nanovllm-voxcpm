@@ -382,6 +382,11 @@ class ConnectionLimitExceeded(Exception):
     pass
 
 
+class RequestCancelled(Exception):
+    """Raised when a queued request is cancelled by the client."""
+    pass
+
+
 class AsyncVoxCPMServerPool:
     def __init__(self,
         model_path : str,
@@ -411,10 +416,35 @@ class AsyncVoxCPMServerPool:
         if len(kwargs) > 0:
             raise ValueError(f"Unknown kwargs: {kwargs}")
 
-        # Semaphore to limit concurrent streaming connections
+        # ============================================================
+        # TWO-LEVEL RESOURCE MANAGEMENT:
+        # 
+        # Level 1: Connection Semaphore (hard limit)
+        #   - Rejects immediately if max_concurrent_connections reached
+        #   - Protects server memory and network resources
+        #
+        # Level 2: Inference Semaphore (fair queue)
+        #   - Sized to max_num_seqs (GPU batch capacity)
+        #   - Requests beyond this wait in FIFO queue
+        #   - Clients can cancel pending requests
+        # ============================================================
+        
+        # Level 1: Connection limiting (hard reject when full)
         self._connection_semaphore = asyncio.Semaphore(max_concurrent_connections)
         self._max_concurrent_connections = max_concurrent_connections
         self._active_connections = 0
+        
+        # Level 2: Inference slot limiting (queue when full)
+        # Sized to max_num_seqs * num_devices to match GPU batch capacity
+        num_devices = len(devices) if devices else 1
+        self._inference_semaphore = asyncio.Semaphore(max_num_seqs * num_devices)
+        self._max_inference_slots = max_num_seqs * num_devices
+        self._active_inference = 0  # Currently running inference
+        self._queued_inference = 0  # Waiting for inference slot
+        
+        # Cancellation tracking: request_id -> asyncio.Event
+        # When event is set, the queued request should cancel
+        self._pending_cancellations: dict[str, asyncio.Event] = {}
 
         self.servers = [
             AsyncVoxCPMServer(
@@ -452,6 +482,26 @@ class AsyncVoxCPMServerPool:
     def max_concurrent_connections(self) -> int:
         """Return the maximum number of concurrent connections allowed."""
         return self._max_concurrent_connections
+    
+    @property
+    def active_inference(self) -> int:
+        """Return the number of requests currently running inference on GPU."""
+        return self._active_inference
+    
+    @property
+    def queued_inference(self) -> int:
+        """Return the number of requests waiting for an inference slot."""
+        return self._queued_inference
+    
+    @property
+    def max_inference_slots(self) -> int:
+        """Return the maximum number of concurrent inference slots (GPU batch capacity)."""
+        return self._max_inference_slots
+    
+    @property
+    def pending_request_ids(self) -> List[str]:
+        """Return list of request IDs currently waiting in queue."""
+        return list(self._pending_cancellations.keys())
 
     async def wait_for_ready(self):
         await asyncio.gather(*[server.wait_for_ready() for server in self.servers])
@@ -482,6 +532,17 @@ class AsyncVoxCPMServerPool:
             return await self.servers[0].get_available_voices()
         return []
     
+    def cancel_pending_request(self, request_id: str) -> bool:
+        """Cancel a pending (queued) request. Returns True if cancelled, False if not found or already running."""
+        if request_id in self._pending_cancellations:
+            self._pending_cancellations[request_id].set()
+            return True
+        return False
+    
+    def is_request_pending(self, request_id: str) -> bool:
+        """Check if a request is still waiting in queue (not yet running)."""
+        return request_id in self._pending_cancellations
+
     async def generate(
         self,
         target_text : str,
@@ -491,22 +552,27 @@ class AsyncVoxCPMServerPool:
         max_generate_length : int = 2000,
         temperature : float = 1.0,
         cfg_value : float = 2.0,
-        voice : str | None = None
+        voice : str | None = None,
+        request_id : str | None = None,
     ):
-        # Check if semaphore is at capacity (non-blocking check)
-        # locked() returns True when semaphore value is 0 (all slots taken)
+        # Generate request_id if not provided
+        if request_id is None:
+            request_id = gen_uuid()
+        
+        # ============================================================
+        # LEVEL 1: Connection check (hard reject if at capacity)
+        # ============================================================
         if self._connection_semaphore.locked():
             raise ConnectionLimitExceeded(
                 f"Server has reached maximum concurrent connections ({self._max_concurrent_connections}). "
                 "Please try again later."
             )
         
-        # Acquire semaphore slot - should succeed immediately since we checked locked()
-        # No await between check and acquire ensures no race condition in async context
         await self._connection_semaphore.acquire()
         self._active_connections += 1
         
         try:
+            # Resolve prompt if using prompt_id
             if prompt_id is not None:
                 if prompt_id not in self._prompt_pool:
                     raise ValueError(f"Prompt with id {prompt_id} not found")
@@ -519,16 +585,69 @@ class AsyncVoxCPMServerPool:
                 prompt_latents = prompt_info["latents"]
                 prompt_text = prompt_info["text"]
 
-            min_load_server_idx = np.argmin(self.servers_load)
-            self.servers_load[min_load_server_idx] += 1
-
-            server = self.servers[min_load_server_idx]
-
+            # ============================================================
+            # LEVEL 2: Inference queue (wait until slot available or cancelled)
+            # ============================================================
+            self._queued_inference += 1
+            
+            # Create cancellation event for this request
+            cancel_event = asyncio.Event()
+            self._pending_cancellations[request_id] = cancel_event
+            
             try:
-                async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value, voice):
-                    yield data
+                # Wait for either: inference slot OR cancellation
+                acquire_task = asyncio.create_task(self._inference_semaphore.acquire())
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                
+                try:
+                    done, pending = await asyncio.wait(
+                        [acquire_task, cancel_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    
+                    # Cancel the pending task
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                    
+                    # Check if cancelled
+                    if cancel_event.is_set():
+                        # If we acquired the semaphore before cancel, release it
+                        if acquire_task in done and not acquire_task.cancelled():
+                            self._inference_semaphore.release()
+                        raise RequestCancelled(f"Request {request_id} was cancelled while waiting in queue.")
+                    
+                except asyncio.CancelledError:
+                    # If the whole operation is cancelled, clean up
+                    acquire_task.cancel()
+                    cancel_task.cancel()
+                    raise
+                    
             finally:
-                self.servers_load[min_load_server_idx] -= 1
+                self._queued_inference -= 1
+                # Remove from pending cancellations - no longer in queue
+                self._pending_cancellations.pop(request_id, None)
+            
+            # Got inference slot - now running on GPU
+            self._active_inference += 1
+            
+            try:
+                # Select server with lowest load
+                min_load_server_idx = np.argmin(self.servers_load)
+                self.servers_load[min_load_server_idx] += 1
+                server = self.servers[min_load_server_idx]
+
+                try:
+                    async for data in server.generate(target_text, prompt_latents, prompt_text, max_generate_length, temperature, cfg_value, voice):
+                        yield data
+                finally:
+                    self.servers_load[min_load_server_idx] -= 1
+            finally:
+                self._active_inference -= 1
+                self._inference_semaphore.release()
         finally:
             self._active_connections -= 1
             self._connection_semaphore.release()
