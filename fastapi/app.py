@@ -75,7 +75,7 @@ async def lifespan(app: FastAPI):
         lora_paths=lora_paths,
         default_voice=DEFAULT_VOICE,
         # torch.compile for DiT estimator: 10-20% TTFB improvement
-        # The estimator runs inference_timesteps (12) times per token - highest ROI target
+        # The estimator runs inference_timesteps (16) times per token - highest ROI target
         use_torch_compile=True,
         compile_mode="max-autotune-no-cudagraphs",  # Avoids conflict with nanovllm's CUDA graph capture
         compile_targets=["estimator"],   # Only compile the DiT, not the full model
