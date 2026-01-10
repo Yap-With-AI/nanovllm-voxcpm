@@ -242,7 +242,7 @@ cd "$SCRIPT_DIR"
 echo "Waiting for server to initialize (loading model into GPU)..."
 
 # Wait for server to be ready (with timeout)
-MAX_WAIT=300  # 5 minutes for model download
+MAX_WAIT=900  # 15 minutes for model download
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
     if curl -s http://localhost:8000/health > /dev/null 2>&1; then
