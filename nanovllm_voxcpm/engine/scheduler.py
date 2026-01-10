@@ -7,15 +7,15 @@ from nanovllm_voxcpm.engine.block_manager import BlockManager
 
 class Scheduler:
     """
-    Scheduler with chunked prefill support for reduced TTFB.
+    Scheduler with chunked prefill support for maximum throughput.
     
-    Scheduling priority:
-    1. Decode steps for running sequences (already prefilled)
-    2. Continue prefill for partially-prefilled sequences
-    3. Start prefill for new waiting sequences
+    Scheduling priority (prefill-centric):
+    1. Continue prefill for partially-prefilled sequences
+    2. Start prefill for new waiting sequences
+    3. Decode steps for running sequences (already prefilled)
     
-    This interleaving ensures sequences that finish prefill early can
-    start decoding immediately, reducing time-to-first-byte.
+    This approach maximizes throughput by batching prefills together,
+    keeping the GPU saturated with compute-heavy prefill operations.
     """
 
     def __init__(self, config: Config):
@@ -54,19 +54,19 @@ class Scheduler:
 
     def schedule(self) -> tuple[list[Sequence], bool]:
         """
-        Schedule next batch with decode-first priority.
+        Schedule next batch with prefill-first priority.
         
         Returns:
             tuple: (sequences, is_prefill)
         """
-        # Priority 1: Decode for running sequences
-        # This keeps TTFB low - sequences that finished prefill get their tokens ASAP
-        if self.running:
-            return self._schedule_decode()
-        
-        # Priority 2 & 3: Prefill (continue existing or start new)
+        # Priority 1 & 2: Prefill (continue existing or start new)
+        # This maximizes throughput by keeping the GPU saturated with prefills
         if self.prefilling or self.waiting:
             return self._schedule_prefill_chunk()
+        
+        # Priority 3: Decode for running sequences
+        if self.running:
+            return self._schedule_decode()
         
         return [], False
     
